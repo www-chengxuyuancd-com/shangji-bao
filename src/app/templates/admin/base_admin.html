@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="admin-layout">
+    <aside class="admin-sidebar">
+        <div class="sidebar-logo">商机宝 管理</div>
+        <ul class="sidebar-menu">
+            <li><a href="{{ url_for('admin.dashboard') }}" class="{{ 'active' if request.endpoint == 'admin.dashboard' }}">仪表盘</a></li>
+            <li><a href="{{ url_for('admin.keywords') }}" class="{{ 'active' if 'keyword' in request.endpoint }}">关键词管理</a></li>
+            <li><a href="{{ url_for('admin.regions') }}" class="{{ 'active' if 'region' in request.endpoint }}">地区管理</a></li>
+            <li><a href="{{ url_for('frontend.index') }}">返回前台</a></li>
+            <li><a href="{{ url_for('admin.logout') }}">退出登录</a></li>
+        </ul>
+    </aside>
+    <main class="admin-main">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for category, message in messages %}
+            <div class="flash-msg {{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+        {% block admin_content %}{% endblock %}
+    </main>
+</div>
+{% endblock %}

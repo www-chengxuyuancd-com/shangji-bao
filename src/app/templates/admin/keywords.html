@@ -1,0 +1,52 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>关键词管理</h1>
+<div class="admin-card">
+    <div class="admin-toolbar">
+        <span>共 {{ keywords|length }} 个关键词</span>
+        <form class="form-inline" method="post" action="{{ url_for('admin.keyword_add') }}">
+            <input type="text" name="keyword" class="form-input" placeholder="输入新关键词" required>
+            <button type="submit" class="btn btn-primary btn-sm">添加</button>
+        </form>
+    </div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>关键词</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for kw in keywords %}
+            <tr>
+                <td>{{ kw.id }}</td>
+                <td>{{ kw.keyword }}</td>
+                <td>
+                    {% if kw.enabled %}
+                    <span class="badge-enabled">&#9679; 启用</span>
+                    {% else %}
+                    <span class="badge-disabled">&#9679; 禁用</span>
+                    {% endif %}
+                </td>
+                <td>{{ kw.createdAt.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.keyword_toggle', kid=kw.id) }}">
+                        <button type="submit" class="btn btn-ghost btn-sm">
+                            {{ '禁用' if kw.enabled else '启用' }}
+                        </button>
+                    </form>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.keyword_delete', kid=kw.id) }}"
+                          onsubmit="return confirm('确定删除？')">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

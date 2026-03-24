@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}管理后台 - 登录{% endblock %}
+
+{% block body %}
+<div class="login-page">
+    <div class="login-card">
+        <h2>商机宝 管理后台</h2>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for category, message in messages %}
+            <div class="flash-msg {{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+        <form method="post">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" name="username" required autofocus>
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary">登录</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

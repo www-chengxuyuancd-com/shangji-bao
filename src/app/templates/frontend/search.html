@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}商机宝 - 招标商机智能检索{% endblock %}
+
+{% block body %}
+<header class="top-bar">
+    <div class="top-bar-inner">
+        <a href="/" class="logo">
+            <span class="logo-icon">&#128218;</span>
+            <span class="logo-text">商机宝</span>
+        </a>
+        <nav class="top-nav">
+            <a href="/" class="nav-link active">商机查询</a>
+            <a href="/admin" class="nav-link">管理后台</a>
+        </nav>
+    </div>
+</header>
+
+<section class="search-hero">
+    <form class="search-box" action="/search" method="get">
+        <input
+            type="text"
+            name="q"
+            class="search-input"
+            placeholder="请输入关键词，示例：人工智能 绿化工程 物业管理 多个关键词请使用空格隔开"
+            value="{{ keyword|default('', true) }}"
+            autocomplete="off"
+        >
+        <button type="submit" class="search-btn">搜索</button>
+    </form>
+</section>
+
+<main class="main-content">
+    <div class="filter-panel">
+        <div class="filter-row">
+            <span class="filter-label">公告类型</span>
+            <div class="filter-options">
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true)) }}"
+                   class="filter-tag {{ 'active' if not source_type else '' }}">全部</a>
+                {% for st in ['招标', '中标', '变更公告', '废标公告', '采购意向', '预招标', '合同', '验收公告'] %}
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true), source_type=st) }}"
+                   class="filter-tag {{ 'active' if source_type == st else '' }}">{{ st }}</a>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="filter-row">
+            <span class="filter-label">项目地区</span>
+            <div class="filter-options">
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true)) }}"
+                   class="filter-tag {{ 'active' if not region_id else '' }}">全部</a>
+                {% for r in regions %}
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true), region_id=r.id) }}"
+                   class="filter-tag {{ 'active' if region_id == r.id|int else '' }}">{{ r.name }}</a>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    {% if keyword is defined and keyword %}
+    <div class="selected-conditions">
+        <span class="sc-label">已选条件：</span>
+        {% if keyword %}
+        <span class="sc-tag">关键词：{{ keyword }}
+            <a href="{{ url_for('frontend.search', region_id=region_id|default('', true), source_type=source_type|default('', true)) }}" class="sc-remove">&times;</a>
+        </span>
+        {% endif %}
+        {% if source_type %}
+        <span class="sc-tag">类型：{{ source_type }}
+            <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true)) }}" class="sc-remove">&times;</a>
+        </span>
+        {% endif %}
+        {% if region_id %}
+        <span class="sc-tag">地区筛选
+            <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true)) }}" class="sc-remove">&times;</a>
+        </span>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="results-section">
+        {% if results is defined and results %}
+            {% for r in results %}
+            <div class="result-card">
+                <h3 class="result-title">
+                    <a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a>
+                </h3>
+                <div class="result-meta">
+                    {% if r.sourceType %}
+                    <span class="meta-tag tag-{{ r.sourceType }}">{{ r.sourceType }}</span>
+                    {% endif %}
+                    {% if r.region %}
+                    <span class="meta-location">&#128205; {{ r.region.name }}</span>
+                    {% endif %}
+                    {% if r.publishDate %}
+                    <span class="meta-date">&#128197; {{ r.publishDate.strftime('%Y-%m-%d') }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+
+            {% if total_pages > 1 %}
+            <div class="pagination">
+                {% if page > 1 %}
+                <a href="{{ url_for('frontend.search', q=keyword, region_id=region_id|default('', true), source_type=source_type|default('', true), page=page-1) }}" class="page-link">&laquo; 上一页</a>
+                {% endif %}
+                <span class="page-info">第 {{ page }} / {{ total_pages }} 页，共 {{ total }} 条结果</span>
+                {% if page < total_pages %}
+                <a href="{{ url_for('frontend.search', q=keyword, region_id=region_id|default('', true), source_type=source_type|default('', true), page=page+1) }}" class="page-link">下一页 &raquo;</a>
+                {% endif %}
+            </div>
+            {% endif %}
+        {% elif keyword is defined and keyword %}
+            <div class="empty-state">
+                <p>未找到与 "<strong>{{ keyword }}</strong>" 相关的商机信息</p>
+            </div>
+        {% else %}
+            <div class="empty-state welcome">
+                <h2>欢迎使用商机宝</h2>
+                <p>输入关键词开始检索招标、采购等商机信息</p>
+            </div>
+        {% endif %}
+    </div>
+</main>
+
+<footer class="footer">
+    <p>&copy; 2026 商机宝 - 招标商机智能检索平台</p>
+</footer>
+{% endblock %}

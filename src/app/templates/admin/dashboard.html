@@ -1,0 +1,19 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>仪表盘</h1>
+<div class="stat-cards">
+    <div class="stat-card">
+        <div class="stat-value">{{ keyword_count }}</div>
+        <div class="stat-label">搜索关键词</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ region_count }}</div>
+        <div class="stat-label">搜索地区</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ result_count }}</div>
+        <div class="stat-label">已采集结果</div>
+    </div>
+</div>
+{% endblock %}

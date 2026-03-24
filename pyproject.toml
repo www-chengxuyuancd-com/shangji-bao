@@ -1,0 +1,24 @@
+[project]
+name = "shangji-bao"
+version = "0.1.0"
+description = "商机宝 - 招标商机信息检索与管理平台"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.1",
+    "scrapy>=2.12",
+    "pymongo>=4.10",
+    "prisma>=0.15",
+    "python-dotenv>=1.1",
+    "gunicorn>=23.0",
+]
+
+[project.scripts]
+web = "src.app:create_app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

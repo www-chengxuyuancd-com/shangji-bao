@@ -1,0 +1,92 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "sync"
+  recursive_type_depth = 5
+}
+
+/// 搜索关键词
+model SearchKeyword {
+  id        BigInt   @id @default(autoincrement())
+  keyword   String   @unique @db.VarChar(200)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tasks CrawlTask[]
+
+  @@map("search_keywords")
+}
+
+/// 搜索地区
+model SearchRegion {
+  id        BigInt   @id @default(autoincrement())
+  name      String   @unique @db.VarChar(100)
+  code      String?  @db.VarChar(20)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tasks   CrawlTask[]
+  results SearchResult[]
+
+  @@map("search_regions")
+}
+
+/// 爬取任务
+model CrawlTask {
+  id        BigInt   @id @default(autoincrement())
+  keywordId BigInt   @map("keyword_id")
+  regionId  BigInt   @map("region_id")
+  status    String   @default("pending") @db.VarChar(20) // pending, running, completed, failed
+  startedAt DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  resultCount Int     @default(0) @map("result_count")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  keyword SearchKeyword @relation(fields: [keywordId], references: [id])
+  region  SearchRegion  @relation(fields: [regionId], references: [id])
+
+  @@unique([keywordId, regionId])
+  @@map("crawl_tasks")
+}
+
+/// 搜索结果
+model SearchResult {
+  id          BigInt   @id @default(autoincrement())
+  title       String   @db.VarChar(500)
+  url         String   @db.VarChar(2000)
+  urlHash     String   @unique @map("url_hash") @db.VarChar(64)
+  sourceType  String?  @map("source_type") @db.VarChar(50) // 招标, 中标, 变更 etc.
+  regionId    BigInt?  @map("region_id")
+  publishDate DateTime? @map("publish_date")
+  mongoDocId  String?  @map("mongo_doc_id") @db.VarChar(50)
+  parsed      Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  region SearchRegion? @relation(fields: [regionId], references: [id])
+
+  @@index([urlHash])
+  @@index([regionId])
+  @@index([sourceType])
+  @@index([publishDate])
+  @@map("search_results")
+}
+
+/// 已访问的URL（去重用）
+model VisitedUrl {
+  id        BigInt   @id @default(autoincrement())
+  url       String   @db.VarChar(2000)
+  urlHash   String   @unique @map("url_hash") @db.VarChar(64)
+  status    Int      @default(0) // HTTP status code
+  visitedAt DateTime @default(now()) @map("visited_at")
+
+  @@index([urlHash])
+  @@map("visited_urls")
+}

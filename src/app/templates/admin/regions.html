@@ -1,0 +1,55 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>地区管理</h1>
+<div class="admin-card">
+    <div class="admin-toolbar">
+        <span>共 {{ regions|length }} 个地区</span>
+        <form class="form-inline" method="post" action="{{ url_for('admin.region_add') }}">
+            <input type="text" name="name" class="form-input" placeholder="地区名称" required>
+            <input type="text" name="code" class="form-input" placeholder="地区编码（选填）" style="width: 120px;">
+            <button type="submit" class="btn btn-primary btn-sm">添加</button>
+        </form>
+    </div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>地区名称</th>
+                <th>编码</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in regions %}
+            <tr>
+                <td>{{ r.id }}</td>
+                <td>{{ r.name }}</td>
+                <td>{{ r.code or '-' }}</td>
+                <td>
+                    {% if r.enabled %}
+                    <span class="badge-enabled">&#9679; 启用</span>
+                    {% else %}
+                    <span class="badge-disabled">&#9679; 禁用</span>
+                    {% endif %}
+                </td>
+                <td>{{ r.createdAt.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.region_toggle', rid=r.id) }}">
+                        <button type="submit" class="btn btn-ghost btn-sm">
+                            {{ '禁用' if r.enabled else '启用' }}
+                        </button>
+                    </form>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.region_delete', rid=r.id) }}"
+                          onsubmit="return confirm('确定删除？')">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
