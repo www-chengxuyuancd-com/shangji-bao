@@ -6,6 +6,7 @@
         <div class="sidebar-logo">商机宝 管理</div>
         <ul class="sidebar-menu">
             <li><a href="{{ url_for('admin.dashboard') }}" class="{{ 'active' if request.endpoint == 'admin.dashboard' }}">仪表盘</a></li>
+            <li><a href="{{ url_for('admin.sources') }}" class="{{ 'active' if 'source' in request.endpoint }}">爬取入口</a></li>
             <li><a href="{{ url_for('admin.keywords') }}" class="{{ 'active' if 'keyword' in request.endpoint }}">关键词管理</a></li>
             <li><a href="{{ url_for('admin.regions') }}" class="{{ 'active' if 'region' in request.endpoint }}">地区管理</a></li>
             <li><a href="{{ url_for('frontend.index') }}">返回前台</a></li>

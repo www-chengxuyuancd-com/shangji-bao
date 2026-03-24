@@ -37,6 +37,23 @@ model SearchRegion {
   @@map("search_regions")
 }
 
+/// 爬取入口（搜索引擎或目标网站）
+model CrawlSource {
+  id              BigInt   @id @default(autoincrement())
+  name            String   @db.VarChar(100)
+  sourceCategory  String   @map("source_category") @db.VarChar(20) // search_engine, website
+  baseUrl         String   @map("base_url") @db.VarChar(2000)
+  searchUrlTemplate String? @map("search_url_template") @db.VarChar(2000)
+  rateLimit       Float    @default(10) @map("rate_limit") // 每秒最大请求数
+  enabled         Boolean  @default(true)
+  notes           String?  @db.Text
+  config          String?  @db.Text // JSON 格式的额外配置
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("crawl_sources")
+}
+
 /// 爬取任务
 model CrawlTask {
   id        BigInt   @id @default(autoincrement())

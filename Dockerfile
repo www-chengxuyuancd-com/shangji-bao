@@ -17,6 +17,7 @@ RUN uv run prisma generate
 
 COPY scrapy.cfg ./
 COPY src ./src
+COPY scripts ./scripts
 
 EXPOSE 5000
 
