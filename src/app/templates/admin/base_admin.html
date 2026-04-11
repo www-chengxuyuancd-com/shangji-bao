@@ -4,11 +4,48 @@
 <div class="admin-layout">
     <aside class="admin-sidebar">
         <div class="sidebar-logo">商机宝 管理</div>
+        {% set g_pipeline = 'job' in request.endpoint or 'result' in request.endpoint or 'parsed' in request.endpoint %}
+        {% set g_config = 'source' in request.endpoint or 'schedule' in request.endpoint or 'keyword' in request.endpoint or 'region' in request.endpoint or 'suffix' in request.endpoint %}
+        {% set g_ml = 'labeling' in request.endpoint %}
         <ul class="sidebar-menu">
             <li><a href="{{ url_for('admin.dashboard') }}" class="{{ 'active' if request.endpoint == 'admin.dashboard' }}">仪表盘</a></li>
-            <li><a href="{{ url_for('admin.sources') }}" class="{{ 'active' if 'source' in request.endpoint }}">爬取入口</a></li>
-            <li><a href="{{ url_for('admin.keywords') }}" class="{{ 'active' if 'keyword' in request.endpoint }}">关键词管理</a></li>
-            <li><a href="{{ url_for('admin.regions') }}" class="{{ 'active' if 'region' in request.endpoint }}">地区管理</a></li>
+
+            <li class="sidebar-group" data-group="pipeline">
+                <div class="sidebar-group-title" onclick="toggleGroup('pipeline')">
+                    <span>流水线</span><span class="group-arrow">{{ '▾' if g_pipeline else '▸' }}</span>
+                </div>
+                <ul class="sidebar-sub" style="{{ '' if g_pipeline else 'display:none;' }}">
+                    <li><a href="{{ url_for('admin.jobs') }}" class="{{ 'active' if 'job' in request.endpoint }}">抓取任务</a></li>
+                    <li><a href="{{ url_for('admin.results') }}" class="{{ 'active' if 'result' in request.endpoint }}">抓取结果</a></li>
+                    <li><a href="{{ url_for('admin.parsed_list') }}" class="{{ 'active' if 'parsed' in request.endpoint }}">内容解析</a></li>
+                </ul>
+            </li>
+
+            <li class="sidebar-group" data-group="config">
+                <div class="sidebar-group-title" onclick="toggleGroup('config')">
+                    <span>配置</span><span class="group-arrow">{{ '▾' if g_config else '▸' }}</span>
+                </div>
+                <ul class="sidebar-sub" style="{{ '' if g_config else 'display:none;' }}">
+                    <li><a href="{{ url_for('admin.sources') }}" class="{{ 'active' if 'source' in request.endpoint }}">爬取入口</a></li>
+                    <li><a href="{{ url_for('admin.schedules') }}" class="{{ 'active' if 'schedule' in request.endpoint }}">调度配置</a></li>
+                    <li><a href="{{ url_for('admin.keywords') }}" class="{{ 'active' if 'keyword' in request.endpoint }}">关键词管理</a></li>
+                    <li><a href="{{ url_for('admin.regions') }}" class="{{ 'active' if 'region' in request.endpoint }}">地区管理</a></li>
+                    <li><a href="{{ url_for('admin.suffixes') }}" class="{{ 'active' if 'suffix' in request.endpoint }}">后缀管理</a></li>
+                </ul>
+            </li>
+
+            <li class="sidebar-group" data-group="ml">
+                <div class="sidebar-group-title" onclick="toggleGroup('ml')">
+                    <span>算法训练</span><span class="group-arrow">{{ '▾' if g_ml else '▸' }}</span>
+                </div>
+                <ul class="sidebar-sub" style="{{ '' if g_ml else 'display:none;' }}">
+                    <li><a href="{{ url_for('admin.labeling_list') }}" class="{{ 'active' if 'labeling' in request.endpoint }}">数据标注</a></li>
+                </ul>
+            </li>
+
+            <li><a href="{{ url_for('admin.notify_list') }}" class="{{ 'active' if 'notify' in request.endpoint }}">消息通知</a></li>
+
+            <li class="sidebar-divider"></li>
             <li><a href="{{ url_for('frontend.index') }}">返回前台</a></li>
             <li><a href="{{ url_for('admin.logout') }}">退出登录</a></li>
         </ul>
@@ -26,4 +63,55 @@
         {% block admin_content %}{% endblock %}
     </main>
 </div>
+
+<div id="toast-container" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;"></div>
+
+<script>
+function showToast(msg, type) {
+    var c = document.getElementById('toast-container');
+    var t = document.createElement('div');
+    var bg = type === 'success' ? '#52c41a' : type === 'error' ? '#ff4d4f' : '#1890ff';
+    t.style.cssText = 'padding:10px 20px;border-radius:6px;color:#fff;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;transition:opacity .3s;background:' + bg;
+    t.textContent = msg;
+    c.appendChild(t);
+    requestAnimationFrame(function(){ t.style.opacity = '1'; });
+    setTimeout(function(){ t.style.opacity = '0'; setTimeout(function(){ t.remove(); }, 300); }, 2500);
+}
+
+function toggleGroup(name) {
+    var group = document.querySelector('.sidebar-group[data-group="'+name+'"]');
+    if (!group) return;
+    var sub = group.querySelector('.sidebar-sub');
+    var arrow = group.querySelector('.group-arrow');
+    if (!sub) return;
+    var open = sub.style.display !== 'none';
+    sub.style.display = open ? 'none' : '';
+    if (arrow) arrow.textContent = open ? '▸' : '▾';
+}
+
+function ajaxToggle(url, row) {
+    fetch(url, {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+        if (!data.ok) { showToast('操作失败', 'error'); return; }
+        var badge = row.querySelector('.badge-enabled, .badge-disabled');
+        var btn = row.querySelector('.toggle-btn');
+        if (data.enabled) {
+            badge.className = 'badge-enabled';
+            badge.innerHTML = '&#9679; 启用';
+            btn.textContent = '禁用';
+            showToast('已启用', 'success');
+        } else {
+            badge.className = 'badge-disabled';
+            badge.innerHTML = '&#9679; 禁用';
+            btn.textContent = '启用';
+            showToast('已禁用', 'info');
+        }
+    })
+    .catch(function(){ showToast('网络错误', 'error'); });
+}
+</script>
 {% endblock %}

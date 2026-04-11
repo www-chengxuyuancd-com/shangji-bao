@@ -4,16 +4,20 @@
 <h1>仪表盘</h1>
 <div class="stat-cards">
     <div class="stat-card">
-        <div class="stat-value">{{ source_count }}</div>
-        <div class="stat-label">爬取入口</div>
+        <div class="stat-value">{{ source_enabled }}</div>
+        <div class="stat-label">启用的爬取入口 <span style="color:#bbb;font-size:12px">/ {{ source_total }} 总计</span></div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">{{ keyword_count }}</div>
-        <div class="stat-label">搜索关键词</div>
+        <div class="stat-value">{{ keyword_enabled }}</div>
+        <div class="stat-label">启用的关键词 <span style="color:#bbb;font-size:12px">/ {{ keyword_total }} 总计</span></div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">{{ region_count }}</div>
-        <div class="stat-label">搜索地区</div>
+        <div class="stat-value">{{ region_enabled }}</div>
+        <div class="stat-label">启用的地区 <span style="color:#bbb;font-size:12px">/ {{ region_total }} 总计</span></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ suffix_enabled }}</div>
+        <div class="stat-label">启用的后缀 <span style="color:#bbb;font-size:12px">/ {{ suffix_total }} 总计</span></div>
     </div>
     <div class="stat-card">
         <div class="stat-value">{{ result_count }}</div>

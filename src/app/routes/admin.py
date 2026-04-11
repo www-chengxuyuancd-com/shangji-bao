@@ -1,6 +1,6 @@
 from functools import wraps
 
-from flask import Blueprint, render_template, request, redirect, url_for, session, flash
+from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify
 
 from src.config import get_config
 from src.db.prisma_client import get_prisma
@@ -40,15 +40,25 @@ def logout():
 @login_required
 def dashboard():
     prisma = get_prisma()
-    source_count = prisma.crawlsource.count()
-    keyword_count = prisma.searchkeyword.count()
-    region_count = prisma.searchregion.count()
+    source_enabled = prisma.crawlsource.count(where={"enabled": True})
+    source_total = prisma.crawlsource.count()
+    keyword_enabled = prisma.searchkeyword.count(where={"enabled": True})
+    keyword_total = prisma.searchkeyword.count()
+    region_enabled = prisma.searchregion.count(where={"enabled": True})
+    region_total = prisma.searchregion.count()
+    suffix_enabled = prisma.searchsuffix.count(where={"enabled": True})
+    suffix_total = prisma.searchsuffix.count()
     result_count = prisma.searchresult.count()
     return render_template(
         "admin/dashboard.html",
-        source_count=source_count,
-        keyword_count=keyword_count,
-        region_count=region_count,
+        source_enabled=source_enabled,
+        source_total=source_total,
+        keyword_enabled=keyword_enabled,
+        keyword_total=keyword_total,
+        region_enabled=region_enabled,
+        region_total=region_total,
+        suffix_enabled=suffix_enabled,
+        suffix_total=suffix_total,
         result_count=result_count,
     )
 
@@ -82,6 +92,9 @@ def keyword_toggle(kid):
     item = prisma.searchkeyword.find_unique(where={"id": kid})
     if item:
         prisma.searchkeyword.update(where={"id": kid}, data={"enabled": not item.enabled})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        new_state = not item.enabled if item else False
+        return jsonify({"ok": True, "enabled": new_state})
     return redirect(url_for("admin.keywords"))
 
 
@@ -98,8 +111,39 @@ def keyword_delete(kid):
 @login_required
 def regions():
     prisma = get_prisma()
-    items = prisma.searchregion.find_many(order={"id": "desc"})
-    return render_template("admin/regions.html", regions=items)
+    all_regions = prisma.searchregion.find_many(order={"id": "asc"})
+
+    LEVEL_LABELS = {"province": "省", "city": "市", "district": "区/县", "street": "街道", "town": "镇", "village": "村", "community": "社区"}
+
+    by_parent = {}
+    by_id = {}
+    for r in all_regions:
+        by_id[r.id] = r
+        pid = r.parentId or 0
+        by_parent.setdefault(pid, []).append(r)
+
+    def build_tree(parent_id=0):
+        nodes = []
+        for r in by_parent.get(parent_id, []):
+            children = build_tree(r.id)
+            nodes.append({
+                "id": int(r.id),
+                "name": r.name,
+                "code": r.code,
+                "level": r.level,
+                "level_label": LEVEL_LABELS.get(r.level, r.level),
+                "enabled": r.enabled,
+                "parentId": int(r.parentId) if r.parentId else None,
+                "children": children,
+            })
+        return nodes
+
+    roots = build_tree(0)
+
+    total = len(all_regions)
+    enabled = sum(1 for r in all_regions if r.enabled)
+
+    return render_template("admin/regions.html", tree=roots, total=total, enabled=enabled, level_labels=LEVEL_LABELS)
 
 
 @admin_bp.route("/regions/add", methods=["POST"])
@@ -107,13 +151,18 @@ def regions():
 def region_add():
     name = request.form.get("name", "").strip()
     code = request.form.get("code", "").strip() or None
+    level = request.form.get("level", "town").strip()
+    parent_id = request.form.get("parent_id", "").strip()
+    parent_id = int(parent_id) if parent_id else None
     if name:
         prisma = get_prisma()
         try:
-            prisma.searchregion.create(data={"name": name, "code": code})
+            prisma.searchregion.create(data={
+                "name": name, "code": code, "level": level, "parentId": parent_id,
+            })
             flash("地区添加成功", "success")
         except Exception:
-            flash("地区已存在", "error")
+            flash("地区已存在或添加失败", "error")
     return redirect(url_for("admin.regions"))
 
 
@@ -124,16 +173,90 @@ def region_toggle(rid):
     item = prisma.searchregion.find_unique(where={"id": rid})
     if item:
         prisma.searchregion.update(where={"id": rid}, data={"enabled": not item.enabled})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        new_state = not item.enabled if item else False
+        return jsonify({"ok": True, "enabled": new_state})
     return redirect(url_for("admin.regions"))
+
+
+@admin_bp.route("/regions/batch-toggle", methods=["POST"])
+@login_required
+def region_batch_toggle():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    enabled = data.get("enabled", True)
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何地区"}), 400
+    prisma = get_prisma()
+    count = 0
+    for rid in ids:
+        try:
+            prisma.searchregion.update(where={"id": int(rid)}, data={"enabled": enabled})
+            count += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "count": count})
 
 
 @admin_bp.route("/regions/<int:rid>/delete", methods=["POST"])
 @login_required
 def region_delete(rid):
     prisma = get_prisma()
+    children = prisma.searchregion.find_many(where={"parentId": rid})
+    for child in children:
+        grandchildren = prisma.searchregion.find_many(where={"parentId": child.id})
+        for gc in grandchildren:
+            prisma.searchregion.delete(where={"id": gc.id})
+        prisma.searchregion.delete(where={"id": child.id})
     prisma.searchregion.delete(where={"id": rid})
-    flash("地区已删除", "success")
+    flash("地区及其子级已删除", "success")
     return redirect(url_for("admin.regions"))
+
+
+# ==================== 搜索后缀管理 ====================
+
+@admin_bp.route("/suffixes")
+@login_required
+def suffixes():
+    prisma = get_prisma()
+    items = prisma.searchsuffix.find_many(order={"id": "desc"})
+    return render_template("admin/suffixes.html", suffixes=items)
+
+
+@admin_bp.route("/suffixes/add", methods=["POST"])
+@login_required
+def suffix_add():
+    suffix = request.form.get("suffix", "").strip()
+    if suffix:
+        prisma = get_prisma()
+        try:
+            prisma.searchsuffix.create(data={"suffix": suffix})
+            flash("后缀添加成功", "success")
+        except Exception:
+            flash("后缀已存在", "error")
+    return redirect(url_for("admin.suffixes"))
+
+
+@admin_bp.route("/suffixes/<int:sid>/toggle", methods=["POST"])
+@login_required
+def suffix_toggle(sid):
+    prisma = get_prisma()
+    item = prisma.searchsuffix.find_unique(where={"id": sid})
+    if item:
+        prisma.searchsuffix.update(where={"id": sid}, data={"enabled": not item.enabled})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        new_state = not item.enabled if item else False
+        return jsonify({"ok": True, "enabled": new_state})
+    return redirect(url_for("admin.suffixes"))
+
+
+@admin_bp.route("/suffixes/<int:sid>/delete", methods=["POST"])
+@login_required
+def suffix_delete(sid):
+    prisma = get_prisma()
+    prisma.searchsuffix.delete(where={"id": sid})
+    flash("后缀已删除", "success")
+    return redirect(url_for("admin.suffixes"))
 
 
 # ==================== 爬取入口管理 ====================
@@ -156,6 +279,8 @@ def source_add():
     base_url = request.form.get("base_url", "").strip()
     search_url_template = request.form.get("search_url_template", "").strip() or None
     rate_limit = float(request.form.get("rate_limit", "10") or "10")
+    max_pages = int(request.form.get("max_pages", "10") or "10")
+    max_depth = int(request.form.get("max_depth", "5") or "5")
     notes = request.form.get("notes", "").strip() or None
 
     if name and base_url:
@@ -166,6 +291,8 @@ def source_add():
             "baseUrl": base_url,
             "searchUrlTemplate": search_url_template,
             "rateLimit": rate_limit,
+            "maxPages": max_pages,
+            "maxDepth": max_depth,
             "notes": notes,
         })
         flash("爬取入口添加成功", "success")
@@ -209,6 +336,9 @@ def source_toggle(sid):
     item = prisma.crawlsource.find_unique(where={"id": sid})
     if item:
         prisma.crawlsource.update(where={"id": sid}, data={"enabled": not item.enabled})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        new_state = not item.enabled if item else False
+        return jsonify({"ok": True, "enabled": new_state})
     return redirect(url_for("admin.sources"))
 
 
@@ -249,3 +379,783 @@ def source_batch_rate():
 
     flash(f"已批量更新 {count} 个入口的速率为 {rate} 次/秒", "success")
     return redirect(url_for("admin.sources"))
+
+
+# ==================== 抓取任务管理 ====================
+
+@admin_bp.route("/jobs")
+@login_required
+def jobs():
+    prisma = get_prisma()
+    items = prisma.crawljob.find_many(order={"id": "desc"}, take=50)
+    return render_template("admin/jobs.html", jobs=items)
+
+
+@admin_bp.route("/jobs/start", methods=["POST"])
+@login_required
+def job_start():
+    from src.scheduler.runner import start_crawl_job
+    job_id = start_crawl_job(trigger_type="manual")
+    flash(f"抓取任务已启动，任务 ID: {job_id}", "success")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_bp.route("/api/jobs/<int:jid>/status")
+@login_required
+def job_status(jid):
+    prisma = get_prisma()
+    job = prisma.crawljob.find_unique(where={"id": jid})
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({
+        "id": int(job.id),
+        "status": job.status,
+        "trigger_type": job.triggerType,
+        "total_sources": job.totalSources,
+        "done_sources": job.doneSources,
+        "total_pages": job.totalPages,
+        "done_pages": job.donePages,
+        "total_queries": job.totalQueries,
+        "done_queries": job.doneQueries,
+        "result_count": job.resultCount,
+        "error_count": job.errorCount,
+        "current_query": job.currentQuery,
+        "started_at": job.startedAt.isoformat() if job.startedAt else None,
+        "finished_at": job.finishedAt.isoformat() if job.finishedAt else None,
+    })
+
+
+@admin_bp.route("/jobs/<int:jid>/cancel", methods=["POST"])
+@login_required
+def job_cancel(jid):
+    prisma = get_prisma()
+    job = prisma.crawljob.find_unique(where={"id": jid})
+    if job and job.status in ("pending", "running", "paused"):
+        prisma.crawljob.update(where={"id": jid}, data={"status": "cancelled"})
+        flash("任务已取消", "success")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_bp.route("/jobs/<int:jid>/pause", methods=["POST"])
+@login_required
+def job_pause(jid):
+    prisma = get_prisma()
+    job = prisma.crawljob.find_unique(where={"id": jid})
+    if job and job.status == "running":
+        prisma.crawljob.update(where={"id": jid}, data={"status": "paused", "currentQuery": "已暂停，等待继续..."})
+        flash("任务已暂停", "success")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_bp.route("/jobs/<int:jid>/resume", methods=["POST"])
+@login_required
+def job_resume(jid):
+    from src.scheduler.runner import resume_crawl_job
+    try:
+        resume_crawl_job(jid)
+        flash(f"任务 {jid} 已继续执行", "success")
+    except Exception as e:
+        flash(f"继续失败: {e}", "error")
+    return redirect(url_for("admin.jobs"))
+
+
+# ==================== 抓取结果浏览 ====================
+
+@admin_bp.route("/results")
+@login_required
+def results():
+    prisma = get_prisma()
+    page = request.args.get("page", 1, type=int)
+    per_page = 20
+    domain_filter = request.args.get("domain", "").strip()
+    keyword_filter = request.args.get("q", "").strip()
+    query_filter = request.args.get("sq", "").strip()
+
+    where = {}
+    if domain_filter:
+        where["domain"] = {"contains": domain_filter}
+    if keyword_filter:
+        where["title"] = {"contains": keyword_filter}
+    if query_filter:
+        where["searchQuery"] = {"contains": query_filter}
+
+    total = prisma.searchresult.count(where=where)
+    items = prisma.searchresult.find_many(
+        where=where,
+        include={"region": True},
+        order={"createdAt": "desc"},
+        skip=(page - 1) * per_page,
+        take=per_page,
+    )
+    total_pages = (total + per_page - 1) // per_page
+
+    engines = prisma.crawlsource.find_many(
+        where={"sourceCategory": "search_engine", "searchUrlTemplate": {"not": None}},
+    )
+    source_search_map = {}
+    for eng in engines:
+        if eng.searchUrlTemplate:
+            source_search_map[eng.name] = eng.searchUrlTemplate
+
+    return render_template(
+        "admin/results.html",
+        results=items,
+        page=page,
+        per_page=per_page,
+        total=total,
+        total_pages=total_pages,
+        domain_filter=domain_filter,
+        keyword_filter=keyword_filter,
+        query_filter=query_filter,
+        source_search_map=source_search_map,
+    )
+
+
+# ==================== 调度配置 ====================
+
+@admin_bp.route("/schedules")
+@login_required
+def schedules():
+    prisma = get_prisma()
+    items = prisma.crawlschedule.find_many(order={"id": "desc"})
+    return render_template("admin/schedules.html", schedules=items)
+
+
+@admin_bp.route("/schedules/add", methods=["POST"])
+@login_required
+def schedule_add():
+    name = request.form.get("name", "").strip()
+    schedule_type = request.form.get("schedule_type", "daily")
+    times_per_day = int(request.form.get("times_per_day", "1") or "1")
+    start_hour = int(request.form.get("start_hour", "2") or "2")
+    start_minute = int(request.form.get("start_minute", "0") or "0")
+    weekdays = request.form.get("weekdays", "").strip() or None
+
+    if name:
+        prisma = get_prisma()
+        prisma.crawlschedule.create(data={
+            "name": name,
+            "scheduleType": schedule_type,
+            "timesPerDay": times_per_day,
+            "startHour": start_hour,
+            "startMinute": start_minute,
+            "weekdays": weekdays,
+        })
+        flash("调度配置添加成功", "success")
+        _reload_schedules()
+    return redirect(url_for("admin.schedules"))
+
+
+@admin_bp.route("/schedules/<int:sid>/toggle", methods=["POST"])
+@login_required
+def schedule_toggle(sid):
+    prisma = get_prisma()
+    item = prisma.crawlschedule.find_unique(where={"id": sid})
+    if item:
+        prisma.crawlschedule.update(where={"id": sid}, data={"enabled": not item.enabled})
+        _reload_schedules()
+    return redirect(url_for("admin.schedules"))
+
+
+@admin_bp.route("/schedules/<int:sid>/delete", methods=["POST"])
+@login_required
+def schedule_delete(sid):
+    prisma = get_prisma()
+    prisma.crawlschedule.delete(where={"id": sid})
+    flash("调度配置已删除", "success")
+    _reload_schedules()
+    return redirect(url_for("admin.schedules"))
+
+
+# ==================== 内容解析 ====================
+
+@admin_bp.route("/parsed")
+@login_required
+def parsed_list():
+    prisma = get_prisma()
+    page = request.args.get("page", 1, type=int)
+    per_page = 20
+    q = request.args.get("q", "").strip()
+    bidder_q = request.args.get("bidder", "").strip()
+    location_q = request.args.get("location", "").strip()
+    relevant_q = request.args.get("relevant", "").strip()
+    notice_type_q = request.args.get("notice_type", "").strip()
+    sort_by = request.args.get("sort", "createdAt")
+    sort_dir = request.args.get("dir", "desc")
+
+    where = {}
+    if q:
+        where["title"] = {"contains": q}
+    if bidder_q:
+        where["bidder"] = {"contains": bidder_q}
+    if location_q:
+        where["location"] = {"contains": location_q}
+    if relevant_q == "yes":
+        where["isRelevant"] = True
+    elif relevant_q == "no":
+        where["isRelevant"] = False
+    if notice_type_q:
+        where["noticeType"] = notice_type_q
+
+    allowed_sorts = ["createdAt", "publishDate", "amountValue", "relevanceScore", "title", "bidder", "location", "noticeType"]
+    if sort_by not in allowed_sorts:
+        sort_by = "createdAt"
+    order_dir = "asc" if sort_dir == "asc" else "desc"
+
+    total = prisma.parsedresult.count(where=where)
+    items = prisma.parsedresult.find_many(
+        where=where,
+        order={sort_by: order_dir},
+        skip=(page - 1) * per_page,
+        take=per_page,
+    )
+    total_pages = (total + per_page - 1) // per_page
+
+    parsed_total = prisma.parsedresult.count()
+    mongo_total = 0
+    try:
+        import os
+        from pymongo import MongoClient
+        uri = os.getenv("MONGO_URI", "mongodb://mongodb:mongodb@localhost:27017/shangjibao?authSource=admin")
+        mc = MongoClient(uri, serverSelectionTimeoutMS=2000)
+        mdb = mc.get_default_database()
+        mongo_total = mdb["raw_pages"].count_documents(
+            {"meta.source_type": {"$in": ["search_result", "website"]}}
+        )
+        mc.close()
+    except Exception:
+        pass
+    unparsed = max(0, mongo_total - parsed_total)
+
+    import os as _os
+    model_path = _os.path.join(
+        _os.getenv("MODEL_DIR", _os.path.join(_os.path.dirname(__file__), "..", "..", "classifier", "data", "models")),
+        "relevance_model.bin",
+    )
+    model_exists = _os.path.exists(model_path)
+
+    return render_template(
+        "admin/parsed.html",
+        items=items,
+        page=page,
+        total=total,
+        total_pages=total_pages,
+        q=q,
+        bidder_q=bidder_q,
+        location_q=location_q,
+        relevant_q=relevant_q,
+        notice_type_q=notice_type_q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        parsed_total=parsed_total,
+        mongo_total=mongo_total,
+        unparsed=unparsed,
+        model_exists=model_exists,
+    )
+
+
+@admin_bp.route("/parsed/start", methods=["POST"])
+@login_required
+def parse_start():
+    from src.parser.engine import start_parse_job
+    job_id = start_parse_job()
+    flash(f"解析任务已启动，任务 ID: {job_id}", "success")
+    return redirect(url_for("admin.parsed_list"))
+
+
+@admin_bp.route("/parsed/rejudge", methods=["POST"])
+@login_required
+def parse_rejudge():
+    from src.parser.engine import start_relevance_rejudge
+    job_id = start_relevance_rejudge()
+    flash(f"相关性重新判定任务已启动（使用最新模型），任务 ID: {job_id}", "success")
+    return redirect(url_for("admin.parsed_list"))
+
+
+@admin_bp.route("/parsed/<int:pid>")
+@login_required
+def parsed_detail(pid):
+    prisma = get_prisma()
+    item = prisma.parsedresult.find_unique(where={"id": pid})
+    if not item:
+        flash("记录不存在", "error")
+        return redirect(url_for("admin.parsed_list"))
+    return render_template("admin/parsed_detail.html", item=item)
+
+
+@admin_bp.route("/results/<int:rid>/delete", methods=["POST"])
+@login_required
+def result_delete(rid):
+    prisma = get_prisma()
+    prisma.searchresult.delete(where={"id": rid})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"ok": True})
+    flash("已删除", "success")
+    return redirect(url_for("admin.results"))
+
+
+@admin_bp.route("/results/batch-delete", methods=["POST"])
+@login_required
+def result_batch_delete():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+    prisma = get_prisma()
+    deleted = 0
+    for rid in ids:
+        try:
+            prisma.searchresult.delete(where={"id": int(rid)})
+            deleted += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@admin_bp.route("/parsed/<int:pid>/delete", methods=["POST"])
+@login_required
+def parsed_delete(pid):
+    prisma = get_prisma()
+    item = prisma.parsedresult.find_unique(where={"id": pid})
+    if item:
+        prisma.notifymessage.delete_many(where={"urlHash": item.urlHash})
+        prisma.labeledsample.delete_many(where={"urlHash": item.urlHash})
+        prisma.parsedresult.delete(where={"id": pid})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"ok": True})
+    flash("已删除", "success")
+    return redirect(url_for("admin.parsed_list"))
+
+
+@admin_bp.route("/parsed/batch-delete", methods=["POST"])
+@login_required
+def parsed_batch_delete():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+    prisma = get_prisma()
+    deleted = 0
+    for pid in ids:
+        try:
+            item = prisma.parsedresult.find_unique(where={"id": int(pid)})
+            if item:
+                prisma.notifymessage.delete_many(where={"urlHash": item.urlHash})
+                prisma.labeledsample.delete_many(where={"urlHash": item.urlHash})
+                prisma.parsedresult.delete(where={"id": int(pid)})
+                deleted += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+# ==================== 消息通知 ====================
+
+@admin_bp.route("/notify")
+@login_required
+def notify_list():
+    from datetime import datetime, timedelta, timezone
+
+    prisma = get_prisma()
+    channels = prisma.notifychannel.find_many(order={"id": "desc"})
+    page = request.args.get("page", 1, type=int)
+    per_page = 20
+    status_filter = request.args.get("status", "").strip()
+    days_filter = request.args.get("days", "", type=str).strip()
+
+    msg_where = {}
+    if status_filter:
+        msg_where["status"] = status_filter
+    if days_filter:
+        try:
+            d = int(days_filter)
+            since = datetime.now(timezone.utc) - timedelta(days=d)
+            msg_where["createdAt"] = {"gte": since}
+        except ValueError:
+            pass
+
+    total = prisma.notifymessage.count(where=msg_where)
+    messages = prisma.notifymessage.find_many(
+        where=msg_where,
+        include={"channel": True},
+        order={"createdAt": "desc"},
+        skip=(page - 1) * per_page,
+        take=per_page,
+    )
+    total_pages = (total + per_page - 1) // per_page
+
+    sent_count = prisma.notifymessage.count(where={"status": "sent"})
+    failed_count = prisma.notifymessage.count(where={"status": "failed"})
+
+    pending_count = 0
+    eligible_count = 0
+    pending_items = []
+    pending_total = 0
+    pending_total_pages = 0
+    enabled_channels = [c for c in channels if c.enabled]
+
+    now = datetime.now(timezone.utc)
+    if enabled_channels:
+        for ch in enabled_channels:
+            months_ago = now - timedelta(days=ch.filterMonths * 30)
+            date_or = [{"publishDate": {"gte": months_ago}}]
+            if ch.filterFuture:
+                date_or.append({"bidEndTime": {"gte": now}})
+            ch_eligible = prisma.parsedresult.count(
+                where={"AND": [{"isRelevant": True}, {"OR": date_or}]}
+            )
+            ch_sent = prisma.notifymessage.count(
+                where={"channelId": ch.id, "status": "sent"}
+            )
+            eligible_count = max(eligible_count, ch_eligible)
+            pending_count += max(0, ch_eligible - ch_sent)
+
+    if status_filter == "pending" and enabled_channels:
+        sent_hashes_all = set()
+        for ch in enabled_channels:
+            sent_msgs = prisma.notifymessage.find_many(
+                where={"channelId": ch.id, "status": "sent"},
+                distinct=["urlHash"],
+            )
+            for sm in sent_msgs:
+                sent_hashes_all.add(sm.urlHash)
+
+        combined_date_or = [{"publishDate": {"gte": now - timedelta(days=max(c.filterMonths for c in enabled_channels) * 30)}}]
+        if any(c.filterFuture for c in enabled_channels):
+            combined_date_or.append({"bidEndTime": {"gte": now}})
+
+        all_eligible = prisma.parsedresult.find_many(
+            where={"AND": [{"isRelevant": True}, {"OR": combined_date_or}]},
+            order={"publishDate": "desc"},
+        )
+        pending_all = [p for p in all_eligible if p.urlHash not in sent_hashes_all]
+        pending_total = len(pending_all)
+        pending_total_pages = (pending_total + per_page - 1) // per_page
+        start = (page - 1) * per_page
+        pending_items = pending_all[start:start + per_page]
+
+    return render_template(
+        "admin/notify.html",
+        channels=channels,
+        messages=messages,
+        page=page,
+        total=total if status_filter != "pending" else pending_total,
+        total_pages=total_pages if status_filter != "pending" else pending_total_pages,
+        status_filter=status_filter,
+        days_filter=days_filter,
+        sent_count=sent_count,
+        failed_count=failed_count,
+        pending_count=pending_count,
+        eligible_count=eligible_count,
+        pending_items=pending_items,
+    )
+
+
+@admin_bp.route("/notify/channel/add", methods=["POST"])
+@login_required
+def notify_channel_add():
+    name = request.form.get("name", "").strip()
+    channel_type = request.form.get("channel_type", "qq").strip()
+    config_str = request.form.get("config", "{}").strip()
+    filter_months = int(request.form.get("filter_months", "3") or "3")
+    filter_future = request.form.get("filter_future") == "on"
+    filter_region = request.form.get("filter_region") == "on"
+    exclude_types = ",".join(request.form.getlist("exclude_types"))
+
+    if not name:
+        flash("渠道名称不能为空", "error")
+        return redirect(url_for("admin.notify_list"))
+
+    try:
+        import json
+        json.loads(config_str)
+    except Exception:
+        flash("配置 JSON 格式错误", "error")
+        return redirect(url_for("admin.notify_list"))
+
+    prisma = get_prisma()
+    prisma.notifychannel.create(data={
+        "name": name,
+        "channelType": channel_type,
+        "config": config_str,
+        "filterMonths": filter_months,
+        "filterFuture": filter_future,
+        "filterRegion": filter_region,
+        "excludeTypes": exclude_types or None,
+    })
+    flash("通知渠道添加成功", "success")
+    return redirect(url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/channel/<int:cid>/edit", methods=["POST"])
+@login_required
+def notify_channel_edit(cid):
+    prisma = get_prisma()
+    item = prisma.notifychannel.find_unique(where={"id": cid})
+    if not item:
+        flash("渠道不存在", "error")
+        return redirect(url_for("admin.notify_list"))
+
+    name = request.form.get("name", "").strip()
+    channel_type = request.form.get("channel_type", "qq").strip()
+    config_str = request.form.get("config", "{}").strip()
+    filter_months = int(request.form.get("filter_months", "3") or "3")
+    filter_future = request.form.get("filter_future") == "on"
+    filter_region = request.form.get("filter_region") == "on"
+    exclude_types = ",".join(request.form.getlist("exclude_types"))
+
+    if not name:
+        flash("渠道名称不能为空", "error")
+        return redirect(url_for("admin.notify_list"))
+
+    try:
+        import json
+        json.loads(config_str)
+    except Exception:
+        flash("配置 JSON 格式错误", "error")
+        return redirect(url_for("admin.notify_list"))
+
+    prisma.notifychannel.update(
+        where={"id": cid},
+        data={
+            "name": name,
+            "channelType": channel_type,
+            "config": config_str,
+            "filterMonths": filter_months,
+            "filterFuture": filter_future,
+            "filterRegion": filter_region,
+            "excludeTypes": exclude_types or None,
+        },
+    )
+    flash("渠道配置已更新", "success")
+    return redirect(url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/channel/<int:cid>/toggle", methods=["POST"])
+@login_required
+def notify_channel_toggle(cid):
+    prisma = get_prisma()
+    item = prisma.notifychannel.find_unique(where={"id": cid})
+    if item:
+        prisma.notifychannel.update(where={"id": cid}, data={"enabled": not item.enabled})
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        new_state = not item.enabled if item else False
+        return jsonify({"ok": True, "enabled": new_state})
+    return redirect(url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/channel/<int:cid>/delete", methods=["POST"])
+@login_required
+def notify_channel_delete(cid):
+    prisma = get_prisma()
+    prisma.notifymessage.delete_many(where={"channelId": cid})
+    prisma.notifychannel.delete(where={"id": cid})
+    flash("渠道已删除", "success")
+    return redirect(url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/send", methods=["POST"])
+@login_required
+def notify_send():
+    from src.notify.engine import send_notifications
+    stats = send_notifications()
+    msg = f"发送完成: 成功 {stats['sent']}，跳过 {stats['skipped']}，失败 {stats['failed']}"
+    if stats["errors"]:
+        msg += f"\n错误: {'; '.join(stats['errors'][:3])}"
+    flash(msg, "success" if stats["failed"] == 0 else "error")
+    return redirect(url_for("admin.notify_list"))
+
+
+# ==================== 数据标注 ====================
+
+@admin_bp.route("/labeling")
+@login_required
+def labeling_list():
+    prisma = get_prisma()
+    page = request.args.get("page", 1, type=int)
+    per_page = 20
+    label_filter = request.args.get("label", "").strip()
+    sq = request.args.get("sq", "").strip()
+
+    where = {}
+    if label_filter == "unlabeled":
+        where["label"] = None
+    elif label_filter == "relevant":
+        where["label"] = 1
+    elif label_filter == "irrelevant":
+        where["label"] = 0
+    if sq:
+        where["searchQuery"] = {"contains": sq}
+
+    total = prisma.labeledsample.count(where=where)
+    items = prisma.labeledsample.find_many(
+        where=where,
+        order=[{"label": "desc"}, {"createdAt": "desc"}],
+        skip=(page - 1) * per_page,
+        take=per_page,
+    )
+    total_pages = (total + per_page - 1) // per_page
+
+    total_all = prisma.labeledsample.count()
+    labeled_count = prisma.labeledsample.count(where={"label": {"not": None}})
+    unlabeled_count = total_all - labeled_count
+    relevant_count = prisma.labeledsample.count(where={"label": 1})
+    irrelevant_count = prisma.labeledsample.count(where={"label": 0})
+
+    import os
+    model_exists = os.path.exists(
+        os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "classifier", "..", "..", "data", "models", "relevance_model.bin"))
+    )
+    try:
+        from src.classifier.trainer import MODEL_PATH
+        model_exists = os.path.exists(MODEL_PATH)
+    except Exception:
+        pass
+
+    return render_template(
+        "admin/labeling.html",
+        items=items,
+        page=page,
+        total=total,
+        total_pages=total_pages,
+        label_filter=label_filter,
+        sq=sq,
+        total_all=total_all,
+        labeled_count=labeled_count,
+        unlabeled_count=unlabeled_count,
+        relevant_count=relevant_count,
+        irrelevant_count=irrelevant_count,
+        model_exists=model_exists,
+    )
+
+
+@admin_bp.route("/labeling/import", methods=["POST"])
+@login_required
+def labeling_import():
+    import hashlib
+    import os
+    from pymongo import MongoClient
+
+    prisma = get_prisma()
+    parsed_items = prisma.parsedresult.find_many(take=2000)
+
+    uri = os.getenv("MONGO_URI", "mongodb://mongodb:mongodb@localhost:27017/shangjibao?authSource=admin")
+    mc = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    mdb = mc.get_default_database()
+    raw_pages = mdb["raw_pages"]
+
+    imported = 0
+    skipped = 0
+    for p in parsed_items:
+        existing = prisma.labeledsample.find_unique(where={"urlHash": p.urlHash})
+        if existing:
+            skipped += 1
+            continue
+
+        content = None
+        if p.mongoDocId:
+            from bson import ObjectId
+            doc = raw_pages.find_one({"_id": ObjectId(p.mongoDocId)})
+            if doc and doc.get("html"):
+                from src.parser.extractors import html_to_text
+                content = html_to_text(doc["html"])[:3000]
+        if not content:
+            content = p.summary or p.title or ""
+
+        clean = lambda s: s.replace("\x00", "") if s else s
+
+        try:
+            prisma.labeledsample.create(data={
+                "parsedId": p.id,
+                "url": p.url,
+                "urlHash": p.urlHash,
+                "title": clean(p.title),
+                "content": clean(content),
+                "searchQuery": clean(p.searchQuery),
+                "sourceName": clean(p.sourceName),
+            })
+            imported += 1
+        except Exception:
+            skipped += 1
+
+    mc.close()
+    flash(f"导入完成: 新增 {imported} 条, 跳过 {skipped} 条已存在的", "success")
+    return redirect(url_for("admin.labeling_list"))
+
+
+@admin_bp.route("/labeling/<int:sid>/label", methods=["POST"])
+@login_required
+def labeling_set_label(sid):
+    from datetime import datetime, timezone
+    data = request.get_json(silent=True) or {}
+    label_val = data.get("label")
+    if label_val not in (0, 1):
+        return jsonify({"ok": False, "error": "无效标注值"}), 400
+
+    prisma = get_prisma()
+    prisma.labeledsample.update(
+        where={"id": sid},
+        data={
+            "label": label_val,
+            "labeledBy": "admin",
+            "labeledAt": datetime.now(timezone.utc),
+        },
+    )
+    return jsonify({"ok": True, "label": label_val})
+
+
+@admin_bp.route("/labeling/<int:sid>/delete", methods=["POST"])
+@login_required
+def labeling_delete(sid):
+    prisma = get_prisma()
+    try:
+        prisma.labeledsample.delete(where={"id": sid})
+    except Exception:
+        pass
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"ok": True})
+    flash("已删除", "success")
+    return redirect(url_for("admin.labeling_list"))
+
+
+@admin_bp.route("/labeling/batch-delete", methods=["POST"])
+@login_required
+def labeling_batch_delete():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+    prisma = get_prisma()
+    deleted = 0
+    for sid in ids:
+        try:
+            prisma.labeledsample.delete(where={"id": int(sid)})
+            deleted += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@admin_bp.route("/labeling/train", methods=["POST"])
+@login_required
+def labeling_train():
+    from src.classifier.trainer import train_model
+    prisma = get_prisma()
+    result = train_model(prisma)
+    if result.get("success"):
+        flash(
+            f"模型训练完成！样本 {result['samples']} 条（相关 {result['relevant']} / 不相关 {result['irrelevant']}），"
+            f"精确率 {result['precision']}，召回率 {result['recall']}",
+            "success",
+        )
+    else:
+        flash(f"训练失败: {result.get('error', '未知错误')}", "error")
+    return redirect(url_for("admin.labeling_list"))
+
+
+def _reload_schedules():
+    try:
+        from src.scheduler.scheduler import sync_schedules
+        sync_schedules()
+    except Exception:
+        pass

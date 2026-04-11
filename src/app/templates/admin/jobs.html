@@ -1,0 +1,211 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>抓取任务</h1>
+
+<div class="admin-card" style="margin-bottom: 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <p style="color:#666;">手动启动一次完整的抓取任务，将遍历所有启用的入口、关键词和地区。</p>
+        <form method="post" action="{{ url_for('admin.job_start') }}">
+            <button type="submit" class="btn btn-primary" onclick="return confirm('确认启动抓取任务？')">
+                &#9654; 开始抓取
+            </button>
+        </form>
+    </div>
+</div>
+
+<div class="admin-card">
+    <div class="admin-toolbar">
+        <span>最近 {{ jobs|length }} 条任务记录</span>
+    </div>
+    <table class="admin-table" style="table-layout:fixed; width:100%;">
+        <thead>
+            <tr>
+                <th style="width:40px">ID</th>
+                <th style="width:75px">状态</th>
+                <th style="width:50px">触发</th>
+                <th style="width:110px">查询进度</th>
+                <th style="width:110px">页面进度</th>
+                <th style="width:55px">采集</th>
+                <th style="width:45px">错误</th>
+                <th style="width:90px">开始时间</th>
+                <th style="width:65px">耗时</th>
+                <th style="width:120px">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for j in jobs %}
+            <tr id="job-row-{{ j.id }}" data-status="{{ j.status }}">
+                <td>{{ j.id }}</td>
+                <td>
+                    {% if j.status == 'running' %}
+                    <span class="job-status status-running">&#9679; 运行中</span>
+                    {% elif j.status == 'paused' %}
+                    <span class="job-status status-paused">&#9679; 已暂停</span>
+                    {% elif j.status == 'interrupted' %}
+                    <span class="job-status status-interrupted">&#9679; 已中断</span>
+                    {% elif j.status == 'completed' %}
+                    <span class="job-status status-completed">&#9679; 已完成</span>
+                    {% elif j.status == 'failed' %}
+                    <span class="job-status status-failed">&#9679; 失败</span>
+                    {% elif j.status == 'cancelled' %}
+                    <span class="job-status status-cancelled">&#9679; 已取消</span>
+                    {% else %}
+                    <span class="job-status status-pending">&#9679; 等待中</span>
+                    {% endif %}
+                </td>
+                <td>{{ '手动' if j.triggerType == 'manual' else ('定时' if j.triggerType == 'scheduled' else j.triggerType) }}</td>
+                <td>
+                    <div class="progress-bar-wrap">
+                        {% set q_pct = (j.doneQueries / j.totalQueries * 100) if j.totalQueries > 0 else 0 %}
+                        <div class="progress-bar" style="width:{{ q_pct|round(0) }}%"></div>
+                        <span class="progress-text query-progress">{{ j.doneQueries }}/{{ j.totalQueries }}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="progress-bar-wrap">
+                        {% set pg_pct = (j.donePages / j.totalPages * 100) if j.totalPages > 0 else 0 %}
+                        <div class="progress-bar" style="width:{{ pg_pct|round(0) }}%"></div>
+                        <span class="progress-text page-progress">{{ j.donePages }}/{{ j.totalPages }}</span>
+                    </div>
+                </td>
+                <td class="result-count">{{ j.resultCount }}</td>
+                <td class="error-count">{{ j.errorCount }}</td>
+                <td style="font-size:12px; white-space:nowrap;">{{ j.startedAt|cst_time if j.startedAt else '-' }}</td>
+                <td>
+                    {% if j.startedAt and j.finishedAt %}
+                        {{ ((j.finishedAt - j.startedAt).total_seconds() / 60)|round(1) }}分钟
+                    {% elif j.status in ('running', 'pending', 'paused') and j.startedAt %}
+                        进行中...
+                    {% elif j.status == 'cancelled' %}
+                        已取消
+                    {% elif j.status == 'interrupted' %}
+                        已中断
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td style="white-space:nowrap;">
+                    {% if j.status == 'running' %}
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_pause', jid=j.id) }}">
+                        <button type="submit" class="btn btn-sm" style="background:#faad14;color:#fff;border:none;">暂停</button>
+                    </form>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_cancel', jid=j.id) }}">
+                        <button type="submit" class="btn btn-danger btn-sm">取消</button>
+                    </form>
+                    {% elif j.status == 'paused' %}
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_resume', jid=j.id) }}">
+                        <button type="submit" class="btn btn-primary btn-sm">继续</button>
+                    </form>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_cancel', jid=j.id) }}">
+                        <button type="submit" class="btn btn-danger btn-sm">取消</button>
+                    </form>
+                    {% elif j.status in ('interrupted', 'failed') %}
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_resume', jid=j.id) }}">
+                        <button type="submit" class="btn btn-primary btn-sm" title="从第 {{ j.doneQueries }} 个查询继续">继续</button>
+                    </form>
+                    {% elif j.status == 'pending' %}
+                    <form style="display:inline" method="post" action="{{ url_for('admin.job_cancel', jid=j.id) }}">
+                        <button type="submit" class="btn btn-danger btn-sm">取消</button>
+                    </form>
+                    {% endif %}
+                    {% if j.errorLog %}
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="alert(this.dataset.log)" data-log="{{ j.errorLog }}">日志</button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% if j.status in ('running', 'pending', 'paused', 'interrupted') and j.currentQuery %}
+            <tr class="current-query-row" data-job="{{ j.id }}">
+                <td colspan="10" style="padding:4px 12px; background:{{ '#e6fffb' if j.status == 'paused' else ('#fff1f0' if j.status == 'interrupted' else '#fffbe6') }}; font-size:12px; color:{{ '#13c2c2' if j.status == 'paused' else ('#ff4d4f' if j.status == 'interrupted' else '#d48806') }}; border-bottom:1px solid {{ '#87e8de' if j.status == 'paused' else ('#ffa39e' if j.status == 'interrupted' else '#ffe58f') }};">
+                    {% if j.status == 'paused' %}&#9208;{% elif j.status == 'interrupted' %}&#9888;{% else %}&#9889;{% endif %}
+                    {{ j.currentQuery }}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<style>
+.job-status { font-size: 13px; font-weight: 500; }
+.status-running { color: #1890ff; }
+.status-paused { color: #13c2c2; }
+.status-interrupted { color: #ff7a45; }
+.status-completed { color: #52c41a; }
+.status-failed { color: #ff4d4f; }
+.status-cancelled { color: #999; }
+.status-pending { color: #faad14; }
+.progress-bar-wrap {
+    position: relative;
+    background: #f0f0f0;
+    border-radius: 4px;
+    height: 20px;
+    min-width: 80px;
+    overflow: hidden;
+}
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #e65c00, #ff8c38);
+    border-radius: 4px;
+    transition: width .3s;
+}
+.progress-text {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #333; font-weight: 500;
+}
+</style>
+
+<script>
+(function() {
+    var runningRows = document.querySelectorAll('tr[data-status="running"], tr[data-status="pending"], tr[data-status="paused"]');
+    if (runningRows.length === 0) return;
+
+    function pollStatus() {
+        runningRows.forEach(function(row) {
+            var jid = row.id.replace('job-row-', '');
+            fetch('/admin/api/jobs/' + jid + '/status')
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled' || d.status === 'interrupted') {
+                        location.reload();
+                        return;
+                    }
+
+                    var qPct = d.total_queries > 0 ? (d.done_queries / d.total_queries * 100) : 0;
+                    var pgPct = d.total_pages > 0 ? (d.done_pages / d.total_pages * 100) : 0;
+
+                    var bars = row.querySelectorAll('.progress-bar');
+                    if (bars[0]) bars[0].style.width = qPct.toFixed(0) + '%';
+                    if (bars[1]) bars[1].style.width = pgPct.toFixed(0) + '%';
+
+                    var qText = row.querySelector('.query-progress');
+                    var pText = row.querySelector('.page-progress');
+                    if (qText) qText.textContent = d.done_queries + '/' + d.total_queries;
+                    if (pText) pText.textContent = d.done_pages + '/' + d.total_pages;
+
+                    var rc = row.querySelector('.result-count');
+                    if (rc) rc.textContent = d.result_count;
+                    var ec = row.querySelector('.error-count');
+                    if (ec) ec.textContent = d.error_count;
+
+                    var cqRow = document.querySelector('.current-query-row[data-job="'+jid+'"]');
+                    if (d.current_query) {
+                        if (!cqRow) {
+                            cqRow = document.createElement('tr');
+                            cqRow.className = 'current-query-row';
+                            cqRow.dataset.job = jid;
+                            cqRow.innerHTML = '<td colspan="10" style="padding:4px 12px;background:#fffbe6;font-size:12px;color:#d48806;border-bottom:1px solid #ffe58f;">&#9889; <span class="cq-text"></span></td>';
+                            row.parentNode.insertBefore(cqRow, row.nextSibling);
+                        }
+                        cqRow.querySelector('.cq-text').textContent = d.current_query;
+                    }
+                });
+        });
+    }
+    setInterval(pollStatus, 1500);
+})();
+</script>
+{% endblock %}

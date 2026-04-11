@@ -1,0 +1,73 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h1 style="margin:0;">解析详情 #{{ item.id }}</h1>
+    <a href="{{ url_for('admin.parsed_list') }}" class="btn btn-ghost btn-sm">&larr; 返回列表</a>
+</div>
+
+<div class="admin-card" style="margin-bottom:16px;">
+    <h3 style="margin-bottom:12px;">基本信息</h3>
+    <table class="admin-table" style="table-layout:fixed;">
+        <tbody>
+            <tr><td style="width:120px; font-weight:600; color:#666;">标题</td><td>{{ item.title or '-' }}</td></tr>
+            <tr><td style="font-weight:600; color:#666;">原始 URL</td><td><a href="{{ item.url }}" target="_blank" rel="noopener" style="color:#1890ff; word-break:break-all;">{{ item.url }}</a></td></tr>
+            <tr><td style="font-weight:600; color:#666;">搜索词</td><td>{{ item.searchQuery or '-' }}</td></tr>
+            <tr><td style="font-weight:600; color:#666;">抓取入口</td><td>{{ item.sourceName or '-' }}</td></tr>
+            <tr><td style="font-weight:600; color:#666;">解析版本</td><td>{{ item.parserVersion or '-' }}</td></tr>
+            <tr><td style="font-weight:600; color:#666;">解析时间</td><td>{{ item.createdAt|cst_time('%Y-%m-%d %H:%M:%S') }}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="admin-card" style="margin-bottom:16px;">
+    <h3 style="margin-bottom:12px;">摘要</h3>
+    <p style="line-height:1.8; color:#333;">{{ item.summary or '未提取到摘要' }}</p>
+</div>
+
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
+    <div class="admin-card">
+        <h3 style="margin-bottom:12px;">招标信息</h3>
+        <table class="admin-table">
+            <tbody>
+                <tr><td style="width:100px; font-weight:600; color:#666;">发布日期</td><td>{{ item.publishDate|cst_time('%Y-%m-%d') if item.publishDate else '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">招标方</td><td>{{ item.bidder or '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">项目地点</td><td>{{ item.location or '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">金额</td><td>{{ item.amount or '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">投标开始</td><td>{{ item.bidStartTime|cst_time('%Y-%m-%d %H:%M') if item.bidStartTime else '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">投标截止</td><td>{{ item.bidEndTime|cst_time('%Y-%m-%d %H:%M') if item.bidEndTime else '-' }}</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="admin-card">
+        <h3 style="margin-bottom:12px;">联系与关联</h3>
+        <table class="admin-table">
+            <tbody>
+                <tr><td style="width:100px; font-weight:600; color:#666;">联系方式</td><td>{{ item.contact or '-' }}</td></tr>
+                <tr>
+                    <td style="font-weight:600; color:#666;">关键词相关</td>
+                    <td>
+                        {% if item.isRelevant == true %}
+                        <span style="color:#52c41a;">✔ 相关 ({{ item.relevanceScore }})</span>
+                        {% elif item.isRelevant == false %}
+                        <span style="color:#ff4d4f;">✘ 不相关</span>
+                        {% else %}
+                        <span style="color:#999;">未判定</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr><td style="font-weight:600; color:#666;">匹配关键词</td><td>{{ item.matchedKeywords or '-' }}</td></tr>
+                <tr><td style="font-weight:600; color:#666;">MongoDB ID</td><td style="font-size:12px; color:#999;">{{ item.mongoDocId or '-' }}</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if item.parseErrors %}
+<div class="admin-card">
+    <h3 style="margin-bottom:12px; color:#ff4d4f;">解析错误</h3>
+    <pre style="background:#fff5f5; padding:12px; border-radius:4px; font-size:12px; overflow-x:auto;">{{ item.parseErrors }}</pre>
+</div>
+{% endif %}
+{% endblock %}

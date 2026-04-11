@@ -1,0 +1,439 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>消息通知</h1>
+
+<div class="admin-card" style="margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">通知渠道</h3>
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:13px; color:#666;">
+                符合条件 <strong>{{ eligible_count }}</strong>
+                &nbsp;|&nbsp; 已发送 <strong style="color:#52c41a;">{{ sent_count }}</strong>
+                &nbsp;|&nbsp; 待发送 <strong style="color:{{ '#ff4d4f' if pending_count > 0 else '#52c41a' }};">{{ pending_count }}</strong>
+                &nbsp;|&nbsp; 失败 <strong style="color:{{ '#ff4d4f' if failed_count > 0 else '#999' }};">{{ failed_count }}</strong>
+            </span>
+            <form method="post" action="{{ url_for('admin.notify_send') }}" style="display:inline;">
+                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('将向所有启用的渠道发送未发送的相关解析结果，确定？')">立即发送通知</button>
+            </form>
+        </div>
+    </div>
+
+    {% if channels %}
+    <table class="admin-table" style="margin-bottom:20px;">
+        <thead>
+            <tr>
+                <th style="width:50px">ID</th>
+                <th>名称</th>
+                <th style="width:120px">类型</th>
+                <th style="width:65px">月数</th>
+                <th style="width:65px">地区</th>
+                <th style="width:100px">排除类型</th>
+                <th style="width:55px">状态</th>
+                <th style="width:130px">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in channels %}
+            <tr>
+                <td>{{ c.id }}</td>
+                <td>{{ c.name }}</td>
+                <td style="font-size:12px;">
+                    {% if c.channelType == 'qq' %}
+                    <span class="meta-tag" style="background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff">QQ</span>
+                    {% else %}
+                    {% set cfg = c.config|default('{}')|tojson|safe %}
+                    <span class="meta-tag" style="background:#fff7e6;color:#d48806;border:1px solid #ffe58f">短信</span>
+                    {% set parsed_cfg = (c.config or '{}')|from_json %}
+                    <span style="color:#999; font-size:11px;">{{ parsed_cfg.get('provider','') }} · {{ parsed_cfg.get('phones',[])|length }}人</span>
+                    {% endif %}
+                </td>
+                <td style="text-align:center; font-size:12px;">{{ c.filterMonths }}</td>
+                <td style="text-align:center; font-size:12px;">
+                    {% if c.filterRegion %}
+                    <span style="color:#52c41a;">✔</span>
+                    {% else %}
+                    <span style="color:#ccc;">✘</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ c.excludeTypes or '无' }}">
+                    {{ c.excludeTypes or '-' }}
+                </td>
+                <td>
+                    {% if c.enabled %}
+                    <span class="badge-enabled">&#9679; 启用</span>
+                    {% else %}
+                    <span class="badge-disabled">&#9679; 禁用</span>
+                    {% endif %}
+                </td>
+                <td style="white-space:nowrap">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="toggleEditRow('edit-row-{{ c.id }}')">编辑</button>
+                    <button type="button" class="btn btn-ghost btn-sm toggle-btn"
+                            onclick="ajaxToggle('{{ url_for('admin.notify_channel_toggle', cid=c.id) }}', this.closest('tr'))">
+                        {{ '禁用' if c.enabled else '启用' }}
+                    </button>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.notify_channel_delete', cid=c.id) }}"
+                          onsubmit="return confirm('删除渠道及其所有消息记录？')">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            <tr id="edit-row-{{ c.id }}" style="display:none;">
+                <td colspan="8" style="padding:16px; background:#fafafa;">
+                    <form method="post" action="{{ url_for('admin.notify_channel_edit', cid=c.id) }}">
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+                            <div>
+                                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">名称</label>
+                                <input type="text" name="name" class="form-input" style="width:100%" value="{{ c.name }}" required>
+                            </div>
+                            <div>
+                                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">渠道类型</label>
+                                <select name="channel_type" class="form-input" style="width:100%">
+                                    <option value="qq" {{ 'selected' if c.channelType == 'qq' }}>QQ (OneBot)</option>
+                                    <option value="sms" {{ 'selected' if c.channelType == 'sms' }}>短信 (HTTP API)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">发布日期筛选（月数）</label>
+                                <input type="number" name="filter_months" class="form-input" style="width:100%" value="{{ c.filterMonths }}" min="1" max="24">
+                            </div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                            <div style="display:flex; align-items:center; gap:16px; padding:4px 0;">
+                                <label style="font-size:13px; color:#666;">
+                                    <input type="checkbox" name="filter_future" {{ 'checked' if c.filterFuture }}> 包含截止日期在今天之后的
+                                </label>
+                                <label style="font-size:13px; color:#666;">
+                                    <input type="checkbox" name="filter_region" {{ 'checked' if c.filterRegion }}> 只发送匹配后台地区的
+                                </label>
+                            </div>
+                            <div>
+                                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">不发送的公告类型（勾选排除）</label>
+                                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                                    {% set cur_excludes = (c.excludeTypes or '').split(',') %}
+                                    {% for nt in ['招标','中标','变更公告','废标公告','采购意向','预招标','合同','验收公告'] %}
+                                    <label style="font-size:12px; color:#666; white-space:nowrap;">
+                                        <input type="checkbox" name="exclude_types" value="{{ nt }}" {{ 'checked' if nt in cur_excludes }}> {{ nt }}
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">配置 (JSON)</label>
+                            <textarea name="config" class="form-input" style="width:100%; height:120px; font-family:monospace; font-size:12px;" required>{{ c.config }}</textarea>
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button type="submit" class="btn btn-primary btn-sm">保存修改</button>
+                            <button type="button" class="btn btn-ghost btn-sm" onclick="toggleEditRow('edit-row-{{ c.id }}')">取消</button>
+                        </div>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <details style="margin-top:8px;" id="add-channel-details">
+        <summary style="cursor:pointer; color:#1890ff; font-size:14px;">+ 添加通知渠道</summary>
+        <form method="post" action="{{ url_for('admin.notify_channel_add') }}" style="margin-top:12px;" onsubmit="return prepareAddForm(this)">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">名称 *</label>
+                    <input type="text" name="name" class="form-input" style="width:100%" placeholder="如：QQ群通知 / 短信通知" required>
+                </div>
+                <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">渠道类型 *</label>
+                    <select name="channel_type" class="form-input" style="width:100%" onchange="toggleAddFields(this.value)">
+                        <option value="qq">QQ (OneBot)</option>
+                        <option value="sms">短信</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">发布日期筛选（月数）</label>
+                    <input type="number" name="filter_months" class="form-input" style="width:100%" value="3" min="1" max="24">
+                </div>
+                <div style="display:flex; align-items:center; gap:16px; padding-bottom:4px;">
+                    <label style="font-size:13px; color:#666;">
+                        <input type="checkbox" name="filter_future" checked> 截止日期在今天之后
+                    </label>
+                    <label style="font-size:13px; color:#666;">
+                        <input type="checkbox" name="filter_region" checked> 只发送匹配后台地区的
+                    </label>
+                </div>
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">不发送的公告类型（勾选排除）</label>
+                <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                    {% for nt in ['招标','中标','变更公告','废标公告','采购意向','预招标','合同','验收公告'] %}
+                    <label style="font-size:12px; color:#666;">
+                        <input type="checkbox" name="exclude_types" value="{{ nt }}" {{ 'checked' if nt in ['中标','验收公告'] }}> {{ nt }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div id="add-qq-fields">
+                <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+                    <div>
+                        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">OneBot API 地址 *</label>
+                        <input type="text" name="qq_api_url" class="form-input" style="width:100%" placeholder="http://napcat:3000" value="http://napcat:3000">
+                    </div>
+                    <div>
+                        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">消息类型</label>
+                        <select name="qq_msg_type" class="form-input" style="width:100%">
+                            <option value="group">群消息</option>
+                            <option value="private">私聊</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">群号/QQ号 *</label>
+                        <input type="text" name="qq_target_id" class="form-input" style="width:100%" placeholder="123456789">
+                    </div>
+                </div>
+            </div>
+
+            <div id="add-sms-fields" style="display:none;">
+                <div style="margin-bottom:12px;">
+                    <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">短信服务商 *</label>
+                    <select name="sms_provider" class="form-input" style="width:300px" onchange="toggleSmsProvider(this.value, 'add')">
+                        <option value="ihuyi">互亿无线（推荐，个人可用）</option>
+                        <option value="aliyun">阿里云短信（需企业认证）</option>
+                    </select>
+                </div>
+
+                <div id="add-ihuyi-fields">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">互亿无线账号 (APIID) *</label>
+                            <input type="text" name="ihuyi_account" class="form-input" style="width:100%" placeholder="C12345678">
+                        </div>
+                        <div>
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">API Key (APIKEY) *</label>
+                            <input type="text" name="ihuyi_api_key" class="form-input" style="width:100%" placeholder="xxxxxxxxxxxxxxxx">
+                        </div>
+                    </div>
+                    <div style="font-size:12px; color:#999; margin-bottom:8px;">
+                        注册地址: <a href="https://www.ihuyi.com" target="_blank" style="color:#1890ff;">www.ihuyi.com</a>，注册后在控制台获取 APIID 和 APIKEY
+                    </div>
+                </div>
+
+                <div id="add-aliyun-fields" style="display:none;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">AccessKey ID *</label>
+                            <input type="text" name="aliyun_key_id" class="form-input" style="width:100%" placeholder="LTAI...">
+                        </div>
+                        <div>
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">AccessKey Secret *</label>
+                            <input type="password" name="aliyun_key_secret" class="form-input" style="width:100%" placeholder="xxxxxxxx">
+                        </div>
+                        <div>
+                            <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">短信模板 Code *</label>
+                            <input type="text" name="aliyun_tpl" class="form-input" style="width:100%" placeholder="SMS_123456">
+                        </div>
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns:1fr 2fr; gap:12px; margin-bottom:12px;">
+                    <div>
+                        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">短信签名</label>
+                        <input type="text" name="sms_sign" class="form-input" style="width:100%" placeholder="商机宝" value="商机宝">
+                    </div>
+                    <div>
+                        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">收件人手机号 *（多个用逗号分隔）</label>
+                        <input type="text" name="sms_phones" class="form-input" style="width:100%" placeholder="13800138000, 13900139000">
+                    </div>
+                </div>
+            </div>
+
+            <input type="hidden" name="config" value="{}">
+            <button type="submit" class="btn btn-primary">添加渠道</button>
+        </form>
+    </details>
+</div>
+
+<div class="admin-card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">
+            消息记录
+            <span style="font-size:13px; color:#999; font-weight:normal; margin-left:8px;">
+                成功 <span style="color:#52c41a">{{ sent_count }}</span> /
+                失败 <span style="color:#ff4d4f">{{ failed_count }}</span> /
+                共 {{ total }}
+            </span>
+        </h3>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:12px; color:#999;">状态:</span>
+            <a href="{{ url_for('admin.notify_list', days=days_filter) }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if not status_filter else '' }}" style="font-size:12px">全部</a>
+            <a href="{{ url_for('admin.notify_list', status='pending') }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if status_filter == 'pending' else '' }}" style="font-size:12px">待发送 ({{ pending_count }})</a>
+            <a href="{{ url_for('admin.notify_list', status='sent', days=days_filter) }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if status_filter == 'sent' else '' }}" style="font-size:12px">已发送</a>
+            <a href="{{ url_for('admin.notify_list', status='failed', days=days_filter) }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if status_filter == 'failed' else '' }}" style="font-size:12px">失败</a>
+            {% if status_filter != 'pending' %}
+            <span style="font-size:12px; color:#999; margin-left:8px;">时间:</span>
+            <a href="{{ url_for('admin.notify_list', status=status_filter, days='1') }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if days_filter == '1' else '' }}" style="font-size:12px">今天</a>
+            <a href="{{ url_for('admin.notify_list', status=status_filter, days='3') }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if days_filter == '3' else '' }}" style="font-size:12px">近3天</a>
+            <a href="{{ url_for('admin.notify_list', status=status_filter, days='7') }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if days_filter == '7' else '' }}" style="font-size:12px">近7天</a>
+            <a href="{{ url_for('admin.notify_list', status=status_filter, days='30') }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if days_filter == '30' else '' }}" style="font-size:12px">近30天</a>
+            <a href="{{ url_for('admin.notify_list', status=status_filter) }}" class="btn btn-ghost btn-sm {{ 'btn-primary' if not days_filter else '' }}" style="font-size:12px">不限</a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if status_filter == 'pending' %}
+    <table class="admin-table" style="table-layout:fixed; width:100%;">
+        <thead>
+            <tr>
+                <th style="width:45px">ID</th>
+                <th style="width:25%">标题</th>
+                <th style="width:90px">发布日期</th>
+                <th style="width:100px">招标方</th>
+                <th style="width:80px">金额</th>
+                <th style="width:90px">投标截止</th>
+                <th style="width:80px">搜索词</th>
+                <th style="width:60px">相关</th>
+                <th style="width:70px">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in pending_items %}
+            <tr>
+                <td>{{ r.id }}</td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.title or '' }}">
+                    <a href="{{ url_for('admin.parsed_detail', pid=r.id) }}" style="color:#1890ff;">{{ r.title or '-' }}</a>
+                </td>
+                <td style="font-size:12px; white-space:nowrap;">{{ r.publishDate|cst_time('%Y-%m-%d') if r.publishDate else '-' }}</td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.bidder or '' }}">{{ r.bidder or '-' }}</td>
+                <td style="font-size:12px; white-space:nowrap;" title="{{ r.amount or '' }}">{{ r.amount or '-' }}</td>
+                <td style="font-size:12px; white-space:nowrap;">{{ r.bidEndTime|cst_time('%m-%d %H:%M') if r.bidEndTime else '-' }}</td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.searchQuery or '' }}">{{ r.searchQuery or '-' }}</td>
+                <td style="font-size:12px; text-align:center;">
+                    {% if r.isRelevant %}<span style="color:#52c41a;">✔ {{ r.relevanceScore }}</span>{% else %}<span style="color:#ccc;">-</span>{% endif %}
+                </td>
+                <td>
+                    <a href="{{ r.url }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="font-size:11px; padding:2px 6px;">原文</a>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not pending_items %}
+            <tr>
+                <td colspan="9" style="text-align:center; padding:40px; color:#999;">没有待发送的消息</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% else %}
+    <table class="admin-table" style="table-layout:fixed; width:100%;">
+        <thead>
+            <tr>
+                <th style="width:45px">ID</th>
+                <th style="width:110px">渠道</th>
+                <th style="width:70px">状态</th>
+                <th style="width:35%">消息内容</th>
+                <th style="width:120px">发送时间</th>
+                <th>错误信息</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in messages %}
+            <tr>
+                <td>{{ m.id }}</td>
+                <td style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ m.channel.name if m.channel else '' }}">{{ m.channel.name if m.channel else '-' }}</td>
+                <td>
+                    {% if m.status == 'sent' %}
+                    <span style="color:#52c41a; font-size:12px;">✔ 成功</span>
+                    {% elif m.status == 'failed' %}
+                    <span style="color:#ff4d4f; font-size:12px;">✘ 失败</span>
+                    {% else %}
+                    <span style="color:#999; font-size:12px;">待发</span>
+                    {% endif %}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; max-width:0;" title="{{ m.content or '' }}">
+                    {{ m.content[:80] if m.content else '-' }}
+                </td>
+                <td style="font-size:12px; white-space:nowrap; color:#666;">
+                    {{ m.sentAt|cst_time('%m-%d %H:%M') if m.sentAt else '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#ff4d4f; max-width:0;" title="{{ m.errorMsg or '' }}">
+                    {{ m.errorMsg[:60] if m.errorMsg else '-' }}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not messages %}
+            <tr>
+                <td colspan="6" style="text-align:center; padding:40px; color:#999;">暂无消息记录</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if total_pages > 1 %}
+    <div class="pagination" style="margin-top:20px;">
+        {% if page > 1 %}
+        <a href="{{ url_for('admin.notify_list', page=page-1, status=status_filter, days=days_filter) }}" class="page-link">&laquo;</a>
+        {% endif %}
+        {% set sp = [1, page - 3] | max %}
+        {% set ep = [total_pages, page + 3] | min %}
+        {% for p in range(sp, ep + 1) %}
+        <a href="{{ url_for('admin.notify_list', page=p, status=status_filter, days=days_filter) }}"
+           class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
+        {% endfor %}
+        {% if ep < total_pages %}
+        <a href="{{ url_for('admin.notify_list', page=total_pages, status=status_filter, days=days_filter) }}" class="page-link">{{ total_pages }}</a>
+        {% endif %}
+        {% if page < total_pages %}
+        <a href="{{ url_for('admin.notify_list', page=page+1, status=status_filter, days=days_filter) }}" class="page-link">&raquo;</a>
+        {% endif %}
+        <span class="page-info">{{ page }}/{{ total_pages }}</span>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function toggleEditRow(rowId) {
+    var row = document.getElementById(rowId);
+    row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function toggleAddFields(type) {
+    document.getElementById('add-qq-fields').style.display = type === 'qq' ? '' : 'none';
+    document.getElementById('add-sms-fields').style.display = type === 'sms' ? '' : 'none';
+}
+
+function toggleSmsProvider(provider, prefix) {
+    var ihuyiEl = document.getElementById(prefix + '-ihuyi-fields');
+    var aliyunEl = document.getElementById(prefix + '-aliyun-fields');
+    if (ihuyiEl) ihuyiEl.style.display = provider === 'ihuyi' ? '' : 'none';
+    if (aliyunEl) aliyunEl.style.display = provider === 'aliyun' ? '' : 'none';
+}
+
+function prepareAddForm(form) {
+    var type = form.channel_type.value;
+    var cfg = {};
+    if (type === 'qq') {
+        cfg = {
+            api_url: form.qq_api_url.value,
+            message_type: form.qq_msg_type.value,
+            target_id: form.qq_target_id.value
+        };
+    } else {
+        var provider = form.sms_provider.value;
+        cfg.provider = provider;
+        cfg.sign_name = form.sms_sign.value;
+        cfg.phones = form.sms_phones.value.split(',').map(function(p){ return p.trim(); }).filter(Boolean);
+        if (provider === 'ihuyi') {
+            cfg.account = form.ihuyi_account.value;
+            cfg.api_key = form.ihuyi_api_key.value;
+        } else if (provider === 'aliyun') {
+            cfg.access_key_id = form.aliyun_key_id.value;
+            cfg.access_key_secret = form.aliyun_key_secret.value;
+            cfg.template_code = form.aliyun_tpl.value;
+        }
+    }
+    form.config.value = JSON.stringify(cfg, null, 2);
+    return true;
+}
+</script>
+{% endblock %}

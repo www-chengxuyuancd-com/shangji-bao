@@ -31,6 +31,18 @@ services:
       timeout: 3s
       retries: 10
 
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    environment:
+      - NAPCAT_UID=0
+      - NAPCAT_GID=0
+    ports:
+      - "6099:6099"
+    volumes:
+      - napcat_config:/app/.config/QQ
+      - napcat_data:/app/napcat/config
+    restart: unless-stopped
+
   web:
     build: .
     ports:
@@ -40,14 +52,22 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/shangjibao
       MONGO_URI: mongodb://mongodb:mongodb@mongodb:27017/shangjibao?authSource=admin
+      MODEL_DIR: /app/data/models
+    volumes:
+      - model_data:/app/data/models
     depends_on:
       postgres:
         condition: service_healthy
       mongodb:
         condition: service_healthy
     command: >
-      sh -c "uv run prisma db push --skip-generate && uv run gunicorn -w 4 -b 0.0.0.0:5000 'src.app:create_app()'"
+      sh -c "uv run prisma db push --skip-generate --accept-data-loss &&
+             uv run python scripts/seed_regions.py &&
+             uv run gunicorn -w 4 -b 0.0.0.0:5000 'src.app:create_app()'"
 
 volumes:
   pgdata:
   mongodata:
+  napcat_config:
+  napcat_data:
+  model_data:

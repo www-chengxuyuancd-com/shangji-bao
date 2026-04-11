@@ -1,74 +1,40 @@
 """
-解析器占位模块。
+解析引擎框架。
 
-后续在此模块中实现对采集到的原始 HTML 的解析逻辑，例如：
-- 提取招标金额
-- 提取联系方式
-- 提取截止日期
-- 提取招标单位
-- 提取项目详情
-等结构化信息。
+每个字段有一个 FieldExtractor 接口，可以注册多个实现（规则、LLM 等），
+通过 config 选择使用哪个实现，方便 A/B 测试。
 """
 from abc import ABC, abstractmethod
 
 
-class BaseParser(ABC):
-    """解析器基类，所有具体解析器需要继承此类。"""
+class FieldExtractor(ABC):
+    """字段提取器基类。"""
+
+    name: str = "base"
 
     @abstractmethod
-    def parse(self, html: str, url: str) -> dict:
+    def extract(self, text: str, html: str, context: dict) -> object:
         """
-        解析 HTML 内容，返回结构化数据字典。
+        从文本/HTML中提取信息。
 
         Args:
-            html: 原始 HTML 字符串
-            url: 页面 URL
+            text: 去除标签后的纯文本
+            html: 原始 HTML
+            context: 上下文信息 (url, title, search_query 等)
 
         Returns:
-            解析后的结构化数据
+            提取到的值，类型取决于具体字段
         """
         ...
 
-    @abstractmethod
-    def can_handle(self, url: str) -> bool:
-        """判断此解析器是否能处理该 URL。"""
-        ...
+
+class LLMFieldExtractor(FieldExtractor):
+    """大模型提取器接口（预留）。子类实现具体的 LLM 调用。"""
+
+    name = "llm"
+
+    def extract(self, text: str, html: str, context: dict) -> object:
+        return None
 
 
-class DefaultParser(BaseParser):
-    """默认解析器（占位），后续替换为实际解析逻辑。"""
-
-    def parse(self, html: str, url: str) -> dict:
-        return {
-            "raw_length": len(html),
-            "url": url,
-            "parsed": False,
-            "message": "尚未实现具体解析逻辑",
-        }
-
-    def can_handle(self, url: str) -> bool:
-        return True
-
-
-class ParserRegistry:
-    """解析器注册表，根据 URL 自动选择合适的解析器。"""
-
-    def __init__(self):
-        self._parsers: list[BaseParser] = []
-        self._default = DefaultParser()
-
-    def register(self, parser: BaseParser):
-        self._parsers.append(parser)
-
-    def get_parser(self, url: str) -> BaseParser:
-        for parser in self._parsers:
-            if parser.can_handle(url):
-                return parser
-        return self._default
-
-    def parse(self, html: str, url: str) -> dict:
-        parser = self.get_parser(url)
-        return parser.parse(html, url)
-
-
-registry = ParserRegistry()
+PARSER_VERSION = "rule_v1"

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from urllib.parse import urlparse
 
 from pymongo import MongoClient
 from prisma import Prisma
@@ -7,8 +8,19 @@ from prisma import Prisma
 logger = logging.getLogger(__name__)
 
 
+def url_to_md5(url: str) -> str:
+    return hashlib.md5(url.encode("utf-8")).hexdigest()
+
+
+def extract_domain(url: str) -> str:
+    try:
+        return urlparse(url).netloc
+    except Exception:
+        return ""
+
+
 class DedupPipeline:
-    """基于 URL hash 去重，跳过已采集的页面。"""
+    """基于 URL MD5 hash 去重，跳过已采集的页面。"""
 
     def open_spider(self, spider):
         self.prisma = Prisma()
@@ -18,7 +30,7 @@ class DedupPipeline:
         self.prisma.disconnect()
 
     def process_item(self, item, spider):
-        url_hash = hashlib.sha256(item["url"].encode("utf-8")).hexdigest()
+        url_hash = url_to_md5(item["url"])
         existing = self.prisma.visitedurl.find_unique(where={"urlHash": url_hash})
         if existing:
             from scrapy.exceptions import DropItem
@@ -66,7 +78,8 @@ class PostgresStoragePipeline:
         self.prisma.disconnect()
 
     def process_item(self, item, spider):
-        url_hash = item.get("_url_hash", hashlib.sha256(item["url"].encode("utf-8")).hexdigest())
+        url_hash = item.get("_url_hash", url_to_md5(item["url"]))
+        domain = extract_domain(item["url"])
 
         self.prisma.visitedurl.create(data={
             "url": item["url"],
@@ -83,6 +96,7 @@ class PostgresStoragePipeline:
             "title": item.get("title", ""),
             "url": item["url"],
             "urlHash": url_hash,
+            "domain": domain,
             "sourceType": item.get("source_type"),
             "regionId": region.id if region else None,
             "publishDate": item.get("publish_date"),

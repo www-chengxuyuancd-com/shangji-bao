@@ -17,11 +17,13 @@
 
 <section class="search-hero">
     <form class="search-box" action="/search" method="get">
+        <input type="hidden" name="region" value="{{ region_name|default('', true) }}">
+        <input type="hidden" name="source_type" value="{{ source_type|default('', true) }}">
         <input
             type="text"
             name="q"
             class="search-input"
-            placeholder="请输入关键词，示例：人工智能 绿化工程 物业管理 多个关键词请使用空格隔开"
+            placeholder="请输入关键词，示例：人工智能 绿化工程 物业管理"
             value="{{ keyword|default('', true) }}"
             autocomplete="off"
         >
@@ -34,43 +36,98 @@
         <div class="filter-row">
             <span class="filter-label">公告类型</span>
             <div class="filter-options">
-                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true)) }}"
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), date_range=date_range|default('', true), date_from=date_from|default('', true), date_to=date_to|default('', true)) }}"
                    class="filter-tag {{ 'active' if not source_type else '' }}">全部</a>
                 {% for st in ['招标', '中标', '变更公告', '废标公告', '采购意向', '预招标', '合同', '验收公告'] %}
-                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true), source_type=st) }}"
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=st, date_range=date_range|default('', true), date_from=date_from|default('', true), date_to=date_to|default('', true)) }}"
                    class="filter-tag {{ 'active' if source_type == st else '' }}">{{ st }}</a>
                 {% endfor %}
             </div>
         </div>
         <div class="filter-row">
+            <span class="filter-label">发布时间</span>
+            <div class="filter-options" style="align-items:center;">
+                {% set dr = date_range|default('', true) %}
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true)) }}"
+                   class="filter-tag {{ 'active' if not dr else '' }}">不限</a>
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true), date_range='today') }}"
+                   class="filter-tag {{ 'active' if dr == 'today' else '' }}">今天</a>
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true), date_range='3d') }}"
+                   class="filter-tag {{ 'active' if dr == '3d' else '' }}">近3天</a>
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true), date_range='7d') }}"
+                   class="filter-tag {{ 'active' if dr == '7d' else '' }}">近7天</a>
+                <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true), date_range='30d') }}"
+                   class="filter-tag {{ 'active' if dr == '30d' else '' }}">近30天</a>
+                <span style="margin-left:8px; font-size:12px; color:#999;">|</span>
+                <form style="display:inline-flex; align-items:center; gap:4px; margin-left:4px;" method="get" action="{{ url_for('frontend.search') }}">
+                    <input type="hidden" name="q" value="{{ keyword|default('', true) }}">
+                    <input type="hidden" name="region" value="{{ region_name|default('', true) }}">
+                    <input type="hidden" name="source_type" value="{{ source_type|default('', true) }}">
+                    <input type="hidden" name="date_range" value="custom">
+                    <input type="date" name="date_from" value="{{ date_from|default('', true) }}" class="date-input" style="font-size:12px; padding:2px 6px; border:1px solid #d9d9d9; border-radius:4px; width:120px;">
+                    <span style="font-size:12px; color:#999;">~</span>
+                    <input type="date" name="date_to" value="{{ date_to|default('', true) }}" class="date-input" style="font-size:12px; padding:2px 6px; border:1px solid #d9d9d9; border-radius:4px; width:120px;">
+                    <button type="submit" style="font-size:12px; padding:3px 10px; background:#e65c00; color:#fff; border:none; border-radius:4px; cursor:pointer;">确定</button>
+                </form>
+            </div>
+        </div>
+        <div class="filter-row">
             <span class="filter-label">项目地区</span>
-            <div class="filter-options">
+            <div class="filter-options" id="region-filter">
                 <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true)) }}"
-                   class="filter-tag {{ 'active' if not region_id else '' }}">全部</a>
-                {% for r in regions %}
-                <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true), region_id=r.id) }}"
-                   class="filter-tag {{ 'active' if region_id == r.id|int else '' }}">{{ r.name }}</a>
+                   class="filter-tag {{ 'active' if not region_name else '' }}">全部</a>
+
+                {% for district in region_tree %}
+                <span class="region-group" data-name="{{ district.name }}">
+                    <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true), region=district.name) }}"
+                       class="filter-tag {{ 'active' if region_name == district.name else '' }}"
+                       {% if district.children %}onclick="event.preventDefault(); toggleRegionLevel(this, '{{ district.name }}')"{% endif %}>
+                        {{ district.name }}
+                        {% if district.children %}<span style="font-size:10px; color:#999;">▸</span>{% endif %}
+                    </a>
+                </span>
                 {% endfor %}
+            </div>
+        </div>
+
+        <div id="region-sub" style="display:none;">
+            <div class="filter-row">
+                <span class="filter-label" id="sub-label" style="min-width:70px;"></span>
+                <div class="filter-options" id="sub-options"></div>
+            </div>
+        </div>
+
+        <div id="region-leaf" style="display:none;">
+            <div class="filter-row">
+                <span class="filter-label" id="leaf-label" style="min-width:70px;"></span>
+                <div class="filter-options" id="leaf-options"></div>
             </div>
         </div>
     </div>
 
-    {% if keyword is defined and keyword %}
+    {% set dr = date_range|default('', true) %}
+    {% set dr_labels = {'today':'今天','3d':'近3天','7d':'近7天','30d':'近30天','custom':'自定义'} %}
+    {% if keyword is defined and keyword or region_name or source_type or dr %}
     <div class="selected-conditions">
         <span class="sc-label">已选条件：</span>
         {% if keyword %}
         <span class="sc-tag">关键词：{{ keyword }}
-            <a href="{{ url_for('frontend.search', region_id=region_id|default('', true), source_type=source_type|default('', true)) }}" class="sc-remove">&times;</a>
+            <a href="{{ url_for('frontend.search', region=region_name|default('', true), source_type=source_type|default('', true), date_range=dr, date_from=date_from|default('', true), date_to=date_to|default('', true)) }}" class="sc-remove">&times;</a>
         </span>
         {% endif %}
         {% if source_type %}
         <span class="sc-tag">类型：{{ source_type }}
-            <a href="{{ url_for('frontend.search', q=keyword|default('', true), region_id=region_id|default('', true)) }}" class="sc-remove">&times;</a>
+            <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), date_range=dr, date_from=date_from|default('', true), date_to=date_to|default('', true)) }}" class="sc-remove">&times;</a>
         </span>
         {% endif %}
-        {% if region_id %}
-        <span class="sc-tag">地区筛选
-            <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true)) }}" class="sc-remove">&times;</a>
+        {% if region_name %}
+        <span class="sc-tag">地区：{{ region_name }}
+            <a href="{{ url_for('frontend.search', q=keyword|default('', true), source_type=source_type|default('', true), date_range=dr, date_from=date_from|default('', true), date_to=date_to|default('', true)) }}" class="sc-remove">&times;</a>
+        </span>
+        {% endif %}
+        {% if dr %}
+        <span class="sc-tag">时间：{{ dr_labels.get(dr, dr) }}{% if dr == 'custom' and (date_from or date_to) %} ({{ date_from|default('?', true) }} ~ {{ date_to|default('?', true) }}){% endif %}
+            <a href="{{ url_for('frontend.search', q=keyword|default('', true), region=region_name|default('', true), source_type=source_type|default('', true)) }}" class="sc-remove">&times;</a>
         </span>
         {% endif %}
     </div>
@@ -78,33 +135,60 @@
 
     <div class="results-section">
         {% if results is defined and results %}
+        <div style="margin-bottom:12px; font-size:13px; color:#999;">
+            {% if is_home is defined and is_home %}最新商机{% else %}共 {{ total }} 条结果{% endif %}
+        </div>
             {% for r in results %}
             <div class="result-card">
                 <h3 class="result-title">
-                    <a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a>
+                    <a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title or '无标题' }}</a>
                 </h3>
                 <div class="result-meta">
-                    {% if r.sourceType %}
-                    <span class="meta-tag tag-{{ r.sourceType }}">{{ r.sourceType }}</span>
+                    {% if r.noticeType %}
+                    {% set nt_colors = {'招标':'#1890ff','中标':'#52c41a','变更公告':'#faad14','废标公告':'#ff4d4f','采购意向':'#722ed1','预招标':'#13c2c2','合同':'#eb2f96','验收公告':'#87d068'} %}
+                    <span class="meta-tag" style="background:{{ nt_colors.get(r.noticeType, '#999') }}18;color:{{ nt_colors.get(r.noticeType, '#999') }};border:1px solid {{ nt_colors.get(r.noticeType, '#999') }}66;">{{ r.noticeType }}</span>
                     {% endif %}
-                    {% if r.region %}
-                    <span class="meta-location">&#128205; {{ r.region.name }}</span>
+                    {% if r.isRelevant %}
+                    <span class="meta-tag" style="background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;">相关</span>
+                    {% endif %}
+                    {% if r.location %}
+                    <span class="meta-location">&#128205; {{ r.location }}</span>
                     {% endif %}
                     {% if r.publishDate %}
-                    <span class="meta-date">&#128197; {{ r.publishDate.strftime('%Y-%m-%d') }}</span>
+                    <span class="meta-date">&#128197; {{ r.publishDate|cst_time('%Y-%m-%d') }}</span>
+                    {% endif %}
+                    {% if r.amount %}
+                    <span class="meta-amount" style="color:#d48806;">&#128176; {{ r.amount }}</span>
+                    {% endif %}
+                    {% if r.bidEndTime %}
+                    <span class="meta-deadline" style="color:#ff4d4f;">&#9200; 截止 {{ r.bidEndTime|cst_time('%Y-%m-%d %H:%M') }}</span>
+                    {% endif %}
+                    {% if r.createdAt %}
+                    <span class="meta-crawl" style="color:#999;">抓取 {{ r.createdAt|cst_time('%m-%d %H:%M') }}</span>
                     {% endif %}
                 </div>
+                {% if r.summary %}
+                <p class="result-summary" style="font-size:13px; color:#666; margin:8px 0 0; line-height:1.6; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">
+                    {{ r.summary[:200] }}
+                </p>
+                {% endif %}
+                {% if r.bidder or r.contact %}
+                <div style="margin-top:6px; font-size:12px; color:#999;">
+                    {% if r.bidder %}招标方: {{ r.bidder }}{% endif %}
+                    {% if r.contact %} | {{ r.contact }}{% endif %}
+                </div>
+                {% endif %}
             </div>
             {% endfor %}
 
             {% if total_pages > 1 %}
             <div class="pagination">
                 {% if page > 1 %}
-                <a href="{{ url_for('frontend.search', q=keyword, region_id=region_id|default('', true), source_type=source_type|default('', true), page=page-1) }}" class="page-link">&laquo; 上一页</a>
+                <a href="{{ url_for('frontend.search', q=keyword, region=region_name|default('', true), source_type=source_type|default('', true), date_range=date_range|default('', true), date_from=date_from|default('', true), date_to=date_to|default('', true), page=page-1) }}" class="page-link">&laquo; 上一页</a>
                 {% endif %}
                 <span class="page-info">第 {{ page }} / {{ total_pages }} 页，共 {{ total }} 条结果</span>
                 {% if page < total_pages %}
-                <a href="{{ url_for('frontend.search', q=keyword, region_id=region_id|default('', true), source_type=source_type|default('', true), page=page+1) }}" class="page-link">下一页 &raquo;</a>
+                <a href="{{ url_for('frontend.search', q=keyword, region=region_name|default('', true), source_type=source_type|default('', true), date_range=date_range|default('', true), date_from=date_from|default('', true), date_to=date_to|default('', true), page=page+1) }}" class="page-link">下一页 &raquo;</a>
                 {% endif %}
             </div>
             {% endif %}
@@ -112,10 +196,14 @@
             <div class="empty-state">
                 <p>未找到与 "<strong>{{ keyword }}</strong>" 相关的商机信息</p>
             </div>
-        {% else %}
+        {% elif is_home is defined and is_home %}
             <div class="empty-state welcome">
                 <h2>欢迎使用商机宝</h2>
-                <p>输入关键词开始检索招标、采购等商机信息</p>
+                <p>暂无数据，请先在管理后台启动抓取和解析任务</p>
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>未找到符合条件的商机信息，请尝试调整筛选条件</p>
             </div>
         {% endif %}
     </div>
@@ -124,4 +212,140 @@
 <footer class="footer">
     <p>&copy; 2026 商机宝 - 招标商机智能检索平台</p>
 </footer>
+
+<script>
+var REGION_TREE = {{ region_tree|tojson }};
+var BASE_URL = '{{ url_for("frontend.search") }}';
+var CUR_KEYWORD = {{ (keyword or '')|tojson }};
+var CUR_SOURCE = {{ (source_type or '')|tojson }};
+var CUR_REGION = {{ (region_name or '')|tojson }};
+var CUR_DR = {{ (date_range or '')|tojson }};
+var CUR_DF = {{ (date_from or '')|tojson }};
+var CUR_DT = {{ (date_to or '')|tojson }};
+
+function buildUrl(regionName) {
+    var params = new URLSearchParams();
+    if (CUR_KEYWORD) params.set('q', CUR_KEYWORD);
+    if (CUR_SOURCE) params.set('source_type', CUR_SOURCE);
+    if (regionName) params.set('region', regionName);
+    if (CUR_DR) params.set('date_range', CUR_DR);
+    if (CUR_DF) params.set('date_from', CUR_DF);
+    if (CUR_DT) params.set('date_to', CUR_DT);
+    return BASE_URL + '?' + params.toString();
+}
+
+function toggleRegionLevel(el, districtName) {
+    var sub = document.getElementById('region-sub');
+    var subLabel = document.getElementById('sub-label');
+    var subOpts = document.getElementById('sub-options');
+    var leaf = document.getElementById('region-leaf');
+
+    leaf.style.display = 'none';
+
+    var district = REGION_TREE.find(function(d){ return d.name === districtName; });
+    if (!district || !district.children || !district.children.length) {
+        window.location.href = buildUrl(districtName);
+        return;
+    }
+
+    // Toggle: if already showing this district's children, navigate to it
+    if (sub.style.display !== 'none' && sub.dataset.parent === districtName) {
+        window.location.href = buildUrl(districtName);
+        return;
+    }
+
+    // Highlight the clicked district
+    document.querySelectorAll('#region-filter .filter-tag').forEach(function(t){ t.classList.remove('active'); });
+    el.classList.add('active');
+
+    sub.dataset.parent = districtName;
+    subLabel.textContent = districtName;
+
+    var html = '<a href="' + buildUrl(districtName) + '" class="filter-tag' + (CUR_REGION === districtName ? ' active' : '') + '">全部 ' + districtName + '</a>';
+    district.children.forEach(function(child){
+        var hasKids = child.children && child.children.length > 0;
+        if (hasKids) {
+            html += '<a href="#" class="filter-tag' + (CUR_REGION === child.name ? ' active' : '') + '" onclick="event.preventDefault(); toggleLeafLevel(this, \'' + districtName + '\', \'' + child.name + '\')">'
+                + child.name + ' <span style="font-size:10px;color:#999;">▸</span></a>';
+        } else {
+            html += '<a href="' + buildUrl(child.name) + '" class="filter-tag' + (CUR_REGION === child.name ? ' active' : '') + '">' + child.name + '</a>';
+        }
+    });
+    subOpts.innerHTML = html;
+    sub.style.display = '';
+}
+
+function toggleLeafLevel(el, districtName, townName) {
+    var leaf = document.getElementById('region-leaf');
+    var leafLabel = document.getElementById('leaf-label');
+    var leafOpts = document.getElementById('leaf-options');
+
+    var district = REGION_TREE.find(function(d){ return d.name === districtName; });
+    if (!district) return;
+    var town = district.children.find(function(t){ return t.name === townName; });
+    if (!town || !town.children || !town.children.length) {
+        window.location.href = buildUrl(townName);
+        return;
+    }
+
+    if (leaf.style.display !== 'none' && leaf.dataset.parent === townName) {
+        window.location.href = buildUrl(townName);
+        return;
+    }
+
+    document.querySelectorAll('#sub-options .filter-tag').forEach(function(t){ t.classList.remove('active'); });
+    el.classList.add('active');
+
+    leaf.dataset.parent = townName;
+    leafLabel.textContent = townName;
+
+    var html = '<a href="' + buildUrl(townName) + '" class="filter-tag' + (CUR_REGION === townName ? ' active' : '') + '">全部 ' + townName + '</a>';
+    town.children.forEach(function(v){
+        html += '<a href="' + buildUrl(v.name) + '" class="filter-tag' + (CUR_REGION === v.name ? ' active' : '') + '">' + v.name + '</a>';
+    });
+    leafOpts.innerHTML = html;
+    leaf.style.display = '';
+}
+
+// Auto-expand if a region is currently selected
+(function(){
+    if (!CUR_REGION) return;
+    for (var i = 0; i < REGION_TREE.length; i++) {
+        var d = REGION_TREE[i];
+        if (d.name === CUR_REGION) {
+            var el = document.querySelector('.region-group[data-name="'+d.name+'"] .filter-tag');
+            if (el && d.children && d.children.length) toggleRegionLevel(el, d.name);
+            return;
+        }
+        if (!d.children) continue;
+        for (var j = 0; j < d.children.length; j++) {
+            var t = d.children[j];
+            if (t.name === CUR_REGION) {
+                var distEl = document.querySelector('.region-group[data-name="'+d.name+'"] .filter-tag');
+                if (distEl) toggleRegionLevel(distEl, d.name);
+                if (t.children && t.children.length) {
+                    setTimeout(function(tn, dn){
+                        var townEl = document.querySelector('#sub-options .filter-tag.active') ||
+                                     Array.from(document.querySelectorAll('#sub-options .filter-tag')).find(function(a){ return a.textContent.trim().startsWith(tn); });
+                        if (townEl) toggleLeafLevel(townEl, dn, tn);
+                    }.bind(null, t.name, d.name), 50);
+                }
+                return;
+            }
+            if (!t.children) continue;
+            for (var k = 0; k < t.children.length; k++) {
+                if (t.children[k].name === CUR_REGION) {
+                    var distEl2 = document.querySelector('.region-group[data-name="'+d.name+'"] .filter-tag');
+                    if (distEl2) toggleRegionLevel(distEl2, d.name);
+                    setTimeout(function(tn, dn){
+                        var townEl2 = Array.from(document.querySelectorAll('#sub-options .filter-tag')).find(function(a){ return a.textContent.trim().startsWith(tn); });
+                        if (townEl2) toggleLeafLevel(townEl2, dn, tn);
+                    }.bind(null, t.name, d.name), 50);
+                    return;
+                }
+            }
+        }
+    }
+})();
+</script>
 {% endblock %}

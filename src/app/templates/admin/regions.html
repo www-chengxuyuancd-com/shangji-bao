@@ -2,54 +2,229 @@
 
 {% block admin_content %}
 <h1>地区管理</h1>
-<div class="admin-card">
-    <div class="admin-toolbar">
-        <span>共 {{ regions|length }} 个地区</span>
-        <form class="form-inline" method="post" action="{{ url_for('admin.region_add') }}">
-            <input type="text" name="name" class="form-input" placeholder="地区名称" required>
-            <input type="text" name="code" class="form-input" placeholder="地区编码（选填）" style="width: 120px;">
-            <button type="submit" class="btn btn-primary btn-sm">添加</button>
-        </form>
+
+<div class="admin-card" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <span style="font-size:13px; color:#666;">
+            共 <strong>{{ total }}</strong> 个地区，启用 <strong style="color:#52c41a;">{{ enabled }}</strong> 个
+        </span>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <div id="batch-bar" style="display:none; font-size:13px;">
+                已选 <strong id="sel-count">0</strong> 个
+                <button type="button" class="btn btn-primary btn-sm" style="margin-left:6px; font-size:12px;" onclick="batchToggle(true)">批量启用</button>
+                <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="batchToggle(false)">批量禁用</button>
+                <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消</button>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="expandAll()">全部展开</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="collapseAll()">全部折叠</button>
+        </div>
     </div>
-    <table class="admin-table">
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>地区名称</th>
-                <th>编码</th>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for r in regions %}
-            <tr>
-                <td>{{ r.id }}</td>
-                <td>{{ r.name }}</td>
-                <td>{{ r.code or '-' }}</td>
-                <td>
-                    {% if r.enabled %}
+</div>
+
+<div class="admin-card">
+    <details style="margin-bottom:16px;">
+        <summary style="cursor:pointer; color:#1890ff; font-size:14px;">+ 添加地区</summary>
+        <form method="post" action="{{ url_for('admin.region_add') }}" style="margin-top:12px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
+                <div>
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:2px;">名称 *</label>
+                    <input type="text" name="name" class="form-input" placeholder="地区名称" required style="width:120px;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:2px;">编码</label>
+                    <input type="text" name="code" class="form-input" placeholder="选填" style="width:100px;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:2px;">级别</label>
+                    <select name="level" class="form-input" style="width:90px;">
+                        <option value="province">省</option>
+                        <option value="city">市</option>
+                        <option value="district">区/县</option>
+                        <option value="street">街道</option>
+                        <option value="town" selected>镇</option>
+                        <option value="village">村</option>
+                        <option value="community">社区</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:2px;">上级地区 ID</label>
+                    <input type="text" name="parent_id" class="form-input" placeholder="选填" style="width:80px;">
+                </div>
+                <button type="submit" class="btn btn-primary btn-sm">添加</button>
+            </div>
+        </form>
+    </details>
+
+    <div id="region-tree">
+        {% macro level_tag(level, label) %}
+        <span style="display:inline-block; font-size:11px; padding:1px 6px; border-radius:3px; margin-right:8px;
+            {% if level == 'province' %}background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;
+            {% elif level == 'city' %}background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;
+            {% elif level == 'district' %}background:#fff7e6;color:#d48806;border:1px solid #ffe58f;
+            {% elif level == 'street' %}background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;
+            {% elif level == 'town' %}background:#fff1f0;color:#ff4d4f;border:1px solid #ffa39e;
+            {% elif level == 'village' %}background:#fcffe6;color:#7cb305;border:1px solid #d3e89e;
+            {% elif level == 'community' %}background:#e6fffb;color:#13c2c2;border:1px solid #87e8de;
+            {% else %}background:#f5f5f5;color:#666;border:1px solid #d9d9d9;
+            {% endif %}">{{ label }}</span>
+        {% endmacro %}
+
+        {% macro render_node(node, depth=0) %}
+        <div class="tree-node" data-id="{{ node.id }}" style="margin-left:{{ depth * 24 }}px;">
+            <div class="tree-row" style="display:flex; align-items:center; padding:6px 8px; border-bottom:1px solid #f0f0f0; font-size:13px;">
+                {% if node.children %}
+                <span class="tree-toggle" onclick="toggleNode(this)" style="cursor:pointer; width:20px; text-align:center; color:#999; user-select:none; flex-shrink:0;">▶</span>
+                {% else %}
+                <span style="width:20px; text-align:center; color:#ddd; font-size:10px; flex-shrink:0;">●</span>
+                {% endif %}
+                <input type="checkbox" class="region-check" value="{{ node.id }}" onclick="updateBatch()" style="margin-right:8px; flex-shrink:0;">
+                {{ level_tag(node.level, node.level_label) }}
+                <span style="flex:1; font-weight:{{ 'bold' if depth < 2 else 'normal' }}; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    {{ node.name }}
+                    {% if node.children %}<span style="color:#bbb; font-size:11px; font-weight:normal;"> ({{ node.children|length }})</span>{% endif %}
+                </span>
+                {% if node.code %}<span style="color:#999; font-size:11px; margin-right:12px; flex-shrink:0;">{{ node.code }}</span>{% endif %}
+                <span id="badge-{{ node.id }}" style="margin-right:8px; flex-shrink:0;">
+                    {% if node.enabled %}
                     <span class="badge-enabled">&#9679; 启用</span>
                     {% else %}
                     <span class="badge-disabled">&#9679; 禁用</span>
                     {% endif %}
-                </td>
-                <td>{{ r.createdAt.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td>
-                    <form style="display:inline" method="post" action="{{ url_for('admin.region_toggle', rid=r.id) }}">
-                        <button type="submit" class="btn btn-ghost btn-sm">
-                            {{ '禁用' if r.enabled else '启用' }}
-                        </button>
-                    </form>
-                    <form style="display:inline" method="post" action="{{ url_for('admin.region_delete', rid=r.id) }}"
-                          onsubmit="return confirm('确定删除？')">
-                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
-                    </form>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                </span>
+                <span style="white-space:nowrap; flex-shrink:0;">
+                    <button type="button" class="btn btn-ghost btn-sm toggle-btn" style="font-size:11px; padding:1px 6px;"
+                            onclick="ajaxToggle('{{ url_for('admin.region_toggle', rid=node.id) }}', this.closest('.tree-row'))">
+                        {{ '禁用' if node.enabled else '启用' }}
+                    </button>
+                    {% if node.children %}
+                    <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px; padding:1px 6px; color:#1890ff;"
+                            onclick="selectChildren({{ node.id }})">选子级</button>
+                    {% endif %}
+                </span>
+            </div>
+            {% if node.children %}
+            <div class="tree-children" data-parent="{{ node.id }}" style="display:none;">
+                {% for child in node.children %}
+                {{ render_node(child, depth + 1) }}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endmacro %}
+
+        {% for root in tree %}
+        {{ render_node(root, 0) }}
+        {% endfor %}
+
+        {% if not tree %}
+        <div style="text-align:center; padding:40px; color:#999;">暂无地区数据</div>
+        {% endif %}
+    </div>
 </div>
+
+<script>
+function toggleNode(el) {
+    var node = el.closest('.tree-node');
+    var children = null;
+    for (var i = 0; i < node.children.length; i++) {
+        if (node.children[i].classList && node.children[i].classList.contains('tree-children')) {
+            children = node.children[i];
+            break;
+        }
+    }
+    if (!children) return;
+    var isOpen = children.style.display !== 'none';
+    children.style.display = isOpen ? 'none' : '';
+    el.textContent = isOpen ? '▶' : '▼';
+}
+
+function expandAll() {
+    document.querySelectorAll('.tree-children').forEach(function(c){ c.style.display = ''; });
+    document.querySelectorAll('.tree-toggle').forEach(function(t){ t.textContent = '▼'; });
+}
+
+function collapseAll() {
+    document.querySelectorAll('.tree-children').forEach(function(c){ c.style.display = 'none'; });
+    document.querySelectorAll('.tree-toggle').forEach(function(t){ t.textContent = '▶'; });
+}
+
+function expandNode(node) {
+    var allSubs = node.querySelectorAll('.tree-children');
+    for (var i = 0; i < allSubs.length; i++) {
+        allSubs[i].style.display = '';
+    }
+    var allToggles = node.querySelectorAll('.tree-toggle');
+    for (var i = 0; i < allToggles.length; i++) {
+        allToggles[i].textContent = '▼';
+    }
+}
+
+function selectChildren(parentId) {
+    var allNodes = document.querySelectorAll('.tree-node');
+    var parentNode = null;
+    for (var i = 0; i < allNodes.length; i++) {
+        if (allNodes[i].getAttribute('data-id') == parentId) {
+            parentNode = allNodes[i];
+            break;
+        }
+    }
+    if (!parentNode) { alert('节点未找到: ' + parentId); return; }
+
+    expandNode(parentNode);
+
+    var allChecks = parentNode.querySelectorAll('input.region-check');
+    for (var i = 0; i < allChecks.length; i++) {
+        allChecks[i].checked = true;
+    }
+    updateBatch();
+}
+
+function updateBatch() {
+    var checked = document.querySelectorAll('.region-check:checked');
+    document.getElementById('sel-count').textContent = checked.length;
+    document.getElementById('batch-bar').style.display = checked.length > 0 ? '' : 'none';
+}
+
+function clearSelection() {
+    document.querySelectorAll('.region-check').forEach(function(cb){ cb.checked = false; });
+    updateBatch();
+}
+
+function batchToggle(enabled) {
+    var checks = document.querySelectorAll('.region-check:checked');
+    if (checks.length === 0) return;
+    var action = enabled ? '启用' : '禁用';
+    if (!confirm('确定' + action + '选中的 ' + checks.length + ' 个地区？')) return;
+    var ids = [];
+    checks.forEach(function(cb){ ids.push(parseInt(cb.value)); });
+    fetch('{{ url_for("admin.region_batch_toggle") }}', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body: JSON.stringify({ids: ids, enabled: enabled})
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok) {
+            ids.forEach(function(id){
+                var badge = document.getElementById('badge-'+id);
+                var row = document.querySelector('.tree-node[data-id="'+id+'"] > .tree-row');
+                if (badge) {
+                    badge.innerHTML = enabled
+                        ? '<span class="badge-enabled">&#9679; 启用</span>'
+                        : '<span class="badge-disabled">&#9679; 禁用</span>';
+                }
+                if (row) {
+                    var btn = row.querySelector('.toggle-btn');
+                    if (btn) btn.textContent = enabled ? '禁用' : '启用';
+                }
+            });
+            clearSelection();
+            showToast(action + '了 ' + d.count + ' 个地区', 'success');
+        } else {
+            showToast(d.error || '操作失败', 'error');
+        }
+    })
+    .catch(function(){ showToast('请求失败', 'error'); });
+}
+</script>
 {% endblock %}

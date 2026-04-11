@@ -1,0 +1,52 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>搜索后缀管理</h1>
+<p style="color:#888;font-size:13px;margin-bottom:16px;">搜索后缀会与每个关键词、地区组合，形成"关键词 + 地区 + 后缀"的搜索词。例如：弱电 + 成都市 + 招标公告</p>
+<div class="admin-card">
+    <div class="admin-toolbar">
+        <span>共 {{ suffixes|length }} 个后缀</span>
+        <form class="form-inline" method="post" action="{{ url_for('admin.suffix_add') }}">
+            <input type="text" name="suffix" class="form-input" placeholder="输入新后缀，如：招标公告" required>
+            <button type="submit" class="btn btn-primary btn-sm">添加</button>
+        </form>
+    </div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>后缀</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in suffixes %}
+            <tr>
+                <td>{{ s.id }}</td>
+                <td>{{ s.suffix }}</td>
+                <td>
+                    {% if s.enabled %}
+                    <span class="badge-enabled">&#9679; 启用</span>
+                    {% else %}
+                    <span class="badge-disabled">&#9679; 禁用</span>
+                    {% endif %}
+                </td>
+                <td>{{ s.createdAt.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>
+                    <button type="button" class="btn btn-ghost btn-sm toggle-btn"
+                            onclick="ajaxToggle('{{ url_for('admin.suffix_toggle', sid=s.id) }}', this.closest('tr'))">
+                        {{ '禁用' if s.enabled else '启用' }}
+                    </button>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.suffix_delete', sid=s.id) }}"
+                          onsubmit="return confirm('确定删除？')">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

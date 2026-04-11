@@ -1,0 +1,129 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>调度配置</h1>
+
+<div class="admin-card" style="margin-bottom: 20px;">
+    <h3 style="margin-bottom: 16px;">添加调度</h3>
+    <form method="post" action="{{ url_for('admin.schedule_add') }}" id="scheduleForm">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">名称 *</label>
+                <input type="text" name="name" class="form-input" style="width:100%" placeholder="如：每日自动抓取" required>
+            </div>
+            <div>
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">调度类型 *</label>
+                <select name="schedule_type" class="form-input" style="width:100%" id="scheduleType" onchange="toggleFields()">
+                    <option value="daily">每天执行</option>
+                    <option value="multi_daily">每天多次</option>
+                    <option value="weekly">每周一次</option>
+                    <option value="multi_weekly">每周多次</option>
+                </select>
+            </div>
+            <div id="timesPerDayWrap">
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">每天执行次数</label>
+                <input type="number" name="times_per_day" class="form-input" style="width:100%" value="1" min="1" max="24">
+            </div>
+            <div>
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">开始小时 (0-23)</label>
+                <input type="number" name="start_hour" class="form-input" style="width:100%" value="2" min="0" max="23">
+            </div>
+            <div>
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">开始分钟 (0-59)</label>
+                <input type="number" name="start_minute" class="form-input" style="width:100%" value="0" min="0" max="59">
+            </div>
+            <div id="weekdaysWrap" style="display:none">
+                <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">星期几 (勾选)</label>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    {% for d, label in [('0','一'),('1','二'),('2','三'),('3','四'),('4','五'),('5','六'),('6','日')] %}
+                    <label style="display:flex; align-items:center; gap:2px; font-size:13px; cursor:pointer;">
+                        <input type="checkbox" class="weekday-cb" value="{{ d }}"> {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+                <input type="hidden" name="weekdays" id="weekdaysInput">
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary" onclick="collectWeekdays()">添加</button>
+    </form>
+</div>
+
+<div class="admin-card">
+    <div class="admin-toolbar">
+        <span>共 {{ schedules|length }} 条调度配置</span>
+    </div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>名称</th>
+                <th>调度类型</th>
+                <th>执行时间</th>
+                <th>状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in schedules %}
+            <tr>
+                <td>{{ s.id }}</td>
+                <td>{{ s.name }}</td>
+                <td>
+                    {% if s.scheduleType == 'daily' %}每天一次
+                    {% elif s.scheduleType == 'multi_daily' %}每天 {{ s.timesPerDay }} 次
+                    {% elif s.scheduleType == 'weekly' %}每周一次
+                    {% elif s.scheduleType == 'multi_weekly' %}每周多次
+                    {% endif %}
+                </td>
+                <td>
+                    {{ '%02d:%02d'|format(s.startHour, s.startMinute) }}
+                    {% if s.timesPerDay > 1 %}
+                     (每{{ (24 // s.timesPerDay) }}小时一次)
+                    {% endif %}
+                    {% if s.weekdays %}
+                    <br>
+                    <span style="font-size:12px;color:#999;">
+                        星期:
+                        {% set day_map = {'0':'一','1':'二','2':'三','3':'四','4':'五','5':'六','6':'日'} %}
+                        {% for d in s.weekdays.split(',') %}{{ day_map.get(d.strip(), d) }}{{ '、' if not loop.last }}{% endfor %}
+                    </span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if s.enabled %}
+                    <span class="badge-enabled">&#9679; 启用</span>
+                    {% else %}
+                    <span class="badge-disabled">&#9679; 禁用</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.schedule_toggle', sid=s.id) }}">
+                        <button type="submit" class="btn btn-ghost btn-sm">{{ '禁用' if s.enabled else '启用' }}</button>
+                    </form>
+                    <form style="display:inline" method="post" action="{{ url_for('admin.schedule_delete', sid=s.id) }}"
+                          onsubmit="return confirm('确定删除？')">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function toggleFields() {
+    var type = document.getElementById('scheduleType').value;
+    var weekWrap = document.getElementById('weekdaysWrap');
+    var timesWrap = document.getElementById('timesPerDayWrap');
+    weekWrap.style.display = (type === 'weekly' || type === 'multi_weekly') ? '' : 'none';
+    timesWrap.style.display = (type === 'multi_daily') ? '' : 'none';
+}
+function collectWeekdays() {
+    var cbs = document.querySelectorAll('.weekday-cb:checked');
+    var vals = Array.from(cbs).map(function(cb) { return cb.value; });
+    document.getElementById('weekdaysInput').value = vals.join(',');
+}
+toggleFields();
+</script>
+{% endblock %}

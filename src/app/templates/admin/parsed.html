@@ -1,0 +1,217 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>内容解析</h1>
+
+<div class="admin-card" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <form method="get" action="{{ url_for('admin.parsed_list') }}" class="form-inline" style="flex-wrap:wrap; gap:6px;">
+            <input type="text" name="q" class="form-input" placeholder="搜索标题" value="{{ q }}" style="width:130px;">
+            <input type="text" name="bidder" class="form-input" placeholder="招标方" value="{{ bidder_q }}" style="width:100px;">
+            <input type="text" name="location" class="form-input" placeholder="地点" value="{{ location_q }}" style="width:100px;">
+            <select name="notice_type" class="form-input" style="width:90px;">
+                <option value="">公告类型</option>
+                {% for nt in ['招标','中标','变更公告','废标公告','采购意向','预招标','合同','验收公告'] %}
+                <option value="{{ nt }}" {{ 'selected' if notice_type_q == nt }}>{{ nt }}</option>
+                {% endfor %}
+            </select>
+            <select name="relevant" class="form-input" style="width:90px;">
+                <option value="">相关性</option>
+                <option value="yes" {{ 'selected' if relevant_q == 'yes' }}>相关</option>
+                <option value="no" {{ 'selected' if relevant_q == 'no' }}>不相关</option>
+            </select>
+            <button type="submit" class="btn btn-primary btn-sm">筛选</button>
+            {% if q or bidder_q or location_q or relevant_q or notice_type_q %}
+            <a href="{{ url_for('admin.parsed_list') }}" class="btn btn-ghost btn-sm">清除</a>
+            {% endif %}
+        </form>
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:13px; color:#666;">
+                原始页面 <strong>{{ mongo_total }}</strong>
+                &nbsp;|&nbsp; 已解析 <strong style="color:#52c41a;">{{ parsed_total }}</strong>
+                &nbsp;|&nbsp; 待解析 <strong style="color:{{ '#ff4d4f' if unparsed > 0 else '#52c41a' }};">{{ unparsed }}</strong>
+            </span>
+            <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
+                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('确定开始解析 MongoDB 中的原始页面？')">启动解析</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.parse_rejudge') }}" style="display:inline;">
+                <button type="submit" class="btn btn-sm {{ 'btn-primary' if model_exists else 'btn-ghost' }}"
+                        style="border-color:#722ed1; color:{{ '#fff' if model_exists else '#722ed1' }}; {{ 'background:#722ed1;' if model_exists else '' }}"
+                        onclick="return confirm('将使用最新的 FastText 模型重新判定所有已解析结果的相关性，确定继续？')"
+                        {{ 'disabled title=请先在数据标注页面训练模型' if not model_exists else 'title=用最新模型重新评估相关性' }}>
+                    🔄 重新判定相关性
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+{% macro sort_link(field, label) %}
+{% set new_dir = 'asc' if sort_by == field and sort_dir == 'desc' else 'desc' %}
+<a href="{{ url_for('admin.parsed_list', q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, notice_type=notice_type_q, sort=field, dir=new_dir) }}"
+   style="color:inherit; text-decoration:none; white-space:nowrap;">
+    {{ label }}
+    {% if sort_by == field %}
+    <span style="font-size:10px;">{{ '▲' if sort_dir == 'asc' else '▼' }}</span>
+    {% endif %}
+</a>
+{% endmacro %}
+
+<div class="admin-card" style="overflow-x:auto;">
+    <div id="batch-bar" style="display:none; margin-bottom:10px; padding:8px 12px; background:#fff7e6; border:1px solid #ffe58f; border-radius:4px; font-size:13px;">
+        已选 <strong id="sel-count">0</strong> 条
+        <button type="button" class="btn btn-danger btn-sm" style="margin-left:10px; font-size:12px;" onclick="batchDelete()">批量删除</button>
+        <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消选择</button>
+    </div>
+    <table class="admin-table" style="table-layout:fixed; width:100%; min-width:1100px;">
+        <thead>
+            <tr>
+                <th style="width:35px"><input type="checkbox" id="check-all" onclick="toggleAll(this)"></th>
+                <th style="width:45px">ID</th>
+                <th style="width:16%">{{ sort_link('title', '标题') }}</th>
+                <th style="width:70px">{{ sort_link('noticeType', '类型') }}</th>
+                <th style="width:85px">{{ sort_link('publishDate', '发布日期') }}</th>
+                <th style="width:100px">{{ sort_link('bidder', '招标方') }}</th>
+                <th style="width:90px">{{ sort_link('location', '地点') }}</th>
+                <th style="width:80px">{{ sort_link('amountValue', '金额') }}</th>
+                <th style="width:80px">投标截止</th>
+                <th style="width:90px">联系方式</th>
+                <th style="width:80px">搜索词</th>
+                <th style="width:60px">{{ sort_link('relevanceScore', '相关') }}</th>
+                <th style="width:85px">{{ sort_link('createdAt', '抓取时间') }}</th>
+                <th style="width:90px">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in items %}
+            <tr data-id="{{ r.id }}">
+                <td><input type="checkbox" class="row-check" value="{{ r.id }}" onclick="updateBatch()"></td>
+                <td>{{ r.id }}</td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.title or '' }}">
+                    <a href="{{ url_for('admin.parsed_detail', pid=r.id) }}" style="color:#1890ff;">{{ r.title or '-' }}</a>
+                </td>
+                <td style="font-size:11px; text-align:center;">
+                    {% if r.noticeType %}
+                    {% set nt_colors = {'招标':'#1890ff','中标':'#52c41a','变更公告':'#faad14','废标公告':'#ff4d4f','采购意向':'#722ed1','预招标':'#13c2c2','合同':'#eb2f96','验收公告':'#87d068'} %}
+                    <span class="meta-tag" style="background:{{ nt_colors.get(r.noticeType, '#999') }}22;color:{{ nt_colors.get(r.noticeType, '#999') }};border:1px solid {{ nt_colors.get(r.noticeType, '#999') }}88;font-size:11px;padding:1px 5px;">{{ r.noticeType }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td style="font-size:12px; white-space:nowrap;">
+                    {{ r.publishDate|cst_time('%Y-%m-%d') if r.publishDate else '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.bidder or '' }}">
+                    {{ r.bidder or '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.location or '' }}">
+                    {{ r.location or '-' }}
+                </td>
+                <td style="font-size:12px; white-space:nowrap;" title="{{ r.amount or '' }}">
+                    {{ r.amount or '-' }}
+                </td>
+                <td style="font-size:12px; white-space:nowrap;">
+                    {{ r.bidEndTime|cst_time('%m-%d %H:%M') if r.bidEndTime else '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.contact or '' }}">
+                    {{ r.contact or '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.searchQuery or '' }}">
+                    {{ r.searchQuery or '-' }}
+                </td>
+                <td style="font-size:12px; text-align:center;">
+                    {% if r.isRelevant == true %}
+                    <span style="color:#52c41a;" title="相关度: {{ r.relevanceScore }}&#10;匹配: {{ r.matchedKeywords }}">✔ {{ r.relevanceScore }}</span>
+                    {% elif r.isRelevant == false %}
+                    <span style="color:#ccc;">✘</span>
+                    {% else %}
+                    <span style="color:#ccc;">-</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:12px; white-space:nowrap; color:#666;">
+                    {{ r.createdAt|cst_time('%m-%d %H:%M') if r.createdAt else '-' }}
+                </td>
+                <td style="white-space:nowrap;">
+                    <a href="{{ r.url }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="font-size:11px; padding:2px 6px;" title="{{ r.url }}">原文</a>
+                    <button type="button" class="btn btn-danger btn-sm" style="font-size:11px; padding:2px 6px;"
+                            onclick="ajaxDelete('{{ url_for('admin.parsed_delete', pid=r.id) }}', this)">删除</button>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not items %}
+            <tr>
+                <td colspan="13" style="text-align:center; padding:40px; color:#999;">暂无解析结果，请先启动解析</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="pagination" style="margin-top:20px;">
+        {% if page > 1 %}
+        <a href="{{ url_for('admin.parsed_list', page=page-1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">&laquo;</a>
+        {% endif %}
+        {% set sp = [1, page - 3] | max %}
+        {% set ep = [total_pages, page + 3] | min %}
+        {% if sp > 1 %}
+        <a href="{{ url_for('admin.parsed_list', page=1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">1</a>
+        {% if sp > 2 %}<span class="page-info">...</span>{% endif %}
+        {% endif %}
+        {% for p in range(sp, ep + 1) %}
+        <a href="{{ url_for('admin.parsed_list', page=p, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}"
+           class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
+        {% endfor %}
+        {% if ep < total_pages %}
+        {% if ep < total_pages - 1 %}<span class="page-info">...</span>{% endif %}
+        <a href="{{ url_for('admin.parsed_list', page=total_pages, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">{{ total_pages }}</a>
+        {% endif %}
+        {% if page < total_pages %}
+        <a href="{{ url_for('admin.parsed_list', page=page+1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">&raquo;</a>
+        {% endif %}
+        <span class="page-info">{{ page }}/{{ total_pages }}</span>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function ajaxDelete(url, btn) {
+    if (!confirm('确定删除此解析结果？')) return;
+    fetch(url, {method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}})
+    .then(function(r){return r.json();})
+    .then(function(d){if(d.ok){btn.closest('tr').remove();updateBatch();showToast('已删除','success');}else{showToast('删除失败','error');}})
+    .catch(function(){showToast('请求失败','error');});
+}
+function toggleAll(master) {
+    document.querySelectorAll('.row-check').forEach(function(cb){cb.checked=master.checked;});
+    updateBatch();
+}
+function updateBatch() {
+    var checked = document.querySelectorAll('.row-check:checked');
+    document.getElementById('sel-count').textContent = checked.length;
+    document.getElementById('batch-bar').style.display = checked.length > 0 ? '' : 'none';
+}
+function clearSelection() {
+    document.querySelectorAll('.row-check').forEach(function(cb){cb.checked=false;});
+    document.getElementById('check-all').checked = false;
+    updateBatch();
+}
+function batchDelete() {
+    var ids = [];
+    document.querySelectorAll('.row-check:checked').forEach(function(cb){ids.push(parseInt(cb.value));});
+    if (!ids.length) return;
+    if (!confirm('确定批量删除选中的 ' + ids.length + ' 条解析结果？')) return;
+    fetch('{{ url_for("admin.parsed_batch_delete") }}', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body:JSON.stringify({ids:ids})
+    })
+    .then(function(r){return r.json();})
+    .then(function(d){
+        if(d.ok){
+            ids.forEach(function(id){var row=document.querySelector('tr[data-id="'+id+'"]');if(row)row.remove();});
+            updateBatch();
+            showToast('已删除 '+d.deleted+' 条','success');
+        } else {showToast(d.error||'删除失败','error');}
+    })
+    .catch(function(){showToast('请求失败','error');});
+}
+</script>
+{% endblock %}

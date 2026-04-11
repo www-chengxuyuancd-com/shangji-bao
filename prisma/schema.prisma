@@ -22,19 +22,38 @@ model SearchKeyword {
   @@map("search_keywords")
 }
 
-/// 搜索地区
+/// 搜索地区（支持省/市/区县/街道/镇层级）
 model SearchRegion {
   id        BigInt   @id @default(autoincrement())
-  name      String   @unique @db.VarChar(100)
+  name      String   @db.VarChar(100)
   code      String?  @db.VarChar(20)
+  level     String   @default("city") @db.VarChar(20) // province, city, district, street, town, village, community
+  parentId  BigInt?  @map("parent_id")
   enabled   Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  parent   SearchRegion?  @relation("RegionTree", fields: [parentId], references: [id])
+  children SearchRegion[] @relation("RegionTree")
+
   tasks   CrawlTask[]
   results SearchResult[]
 
+  @@unique([name, parentId])
+  @@index([parentId])
+  @@index([level])
   @@map("search_regions")
+}
+
+/// 搜索后缀（如 招标公告、中标公告、采购公告 等，与关键词+地区组合搜索）
+model SearchSuffix {
+  id        BigInt   @id @default(autoincrement())
+  suffix    String   @unique @db.VarChar(200)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("search_suffixes")
 }
 
 /// 爬取入口（搜索引擎或目标网站）
@@ -44,22 +63,65 @@ model CrawlSource {
   sourceCategory  String   @map("source_category") @db.VarChar(20) // search_engine, website
   baseUrl         String   @map("base_url") @db.VarChar(2000)
   searchUrlTemplate String? @map("search_url_template") @db.VarChar(2000)
-  rateLimit       Float    @default(10) @map("rate_limit") // 每秒最大请求数
+  rateLimit       Float    @default(10) @map("rate_limit")
+  maxPages        Int      @default(10) @map("max_pages") // 搜索引擎最大抓取页数
+  maxDepth        Int      @default(5) @map("max_depth") // 网站 BFS 最大深度
   enabled         Boolean  @default(true)
   notes           String?  @db.Text
-  config          String?  @db.Text // JSON 格式的额外配置
+  config          String?  @db.Text
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("crawl_sources")
 }
 
-/// 爬取任务
+/// 抓取调度配置
+model CrawlSchedule {
+  id           BigInt   @id @default(autoincrement())
+  name         String   @db.VarChar(100)
+  scheduleType String   @map("schedule_type") @db.VarChar(20) // daily, weekly, multi_weekly, multi_daily
+  timesPerDay  Int      @default(1) @map("times_per_day")
+  startHour    Int      @default(2) @map("start_hour") // 0-23
+  startMinute  Int      @default(0) @map("start_minute") // 0-59
+  weekdays     String?  @db.VarChar(50) // 逗号分隔: 0=周一..6=周日, 如 "0,2,4"
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("crawl_schedules")
+}
+
+/// 爬取任务（每次实际执行的任务记录）
+model CrawlJob {
+  id            BigInt   @id @default(autoincrement())
+  status        String   @default("pending") @db.VarChar(20) // pending, running, paused, completed, failed, cancelled, interrupted
+  triggerType   String   @default("manual") @map("trigger_type") @db.VarChar(20) // manual, scheduled, parse, relevance_rejudge
+  totalSources  Int      @default(0) @map("total_sources")
+  doneSources   Int      @default(0) @map("done_sources")
+  totalPages    Int      @default(0) @map("total_pages")
+  donePages     Int      @default(0) @map("done_pages")
+  totalQueries  Int      @default(0) @map("total_queries")
+  doneQueries   Int      @default(0) @map("done_queries")
+  resultCount   Int      @default(0) @map("result_count")
+  errorCount    Int      @default(0) @map("error_count")
+  currentQuery  String?  @map("current_query") @db.VarChar(500)
+  errorLog      String?  @map("error_log") @db.Text
+  startedAt     DateTime? @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("crawl_jobs")
+}
+
+/// 爬取任务（关键词+地区 组合）
 model CrawlTask {
   id        BigInt   @id @default(autoincrement())
   keywordId BigInt   @map("keyword_id")
   regionId  BigInt   @map("region_id")
-  status    String   @default("pending") @db.VarChar(20) // pending, running, completed, failed
+  status    String   @default("pending") @db.VarChar(20)
   startedAt DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")
   resultCount Int     @default(0) @map("result_count")
@@ -79,7 +141,10 @@ model SearchResult {
   title       String   @db.VarChar(500)
   url         String   @db.VarChar(2000)
   urlHash     String   @unique @map("url_hash") @db.VarChar(64)
-  sourceType  String?  @map("source_type") @db.VarChar(50) // 招标, 中标, 变更 etc.
+  domain      String?  @db.VarChar(500)
+  sourceType  String?  @map("source_type") @db.VarChar(50)
+  sourceName  String?  @map("source_name") @db.VarChar(200)
+  searchQuery String?  @map("search_query") @db.VarChar(500)
   regionId    BigInt?  @map("region_id")
   publishDate DateTime? @map("publish_date")
   mongoDocId  String?  @map("mongo_doc_id") @db.VarChar(50)
@@ -90,19 +155,125 @@ model SearchResult {
   region SearchRegion? @relation(fields: [regionId], references: [id])
 
   @@index([urlHash])
+  @@index([domain])
   @@index([regionId])
   @@index([sourceType])
+  @@index([searchQuery])
   @@index([publishDate])
   @@map("search_results")
 }
 
+/// 解析结果（从原始 HTML 中提取的结构化信息）
+model ParsedResult {
+  id              BigInt    @id @default(autoincrement())
+  url             String    @db.VarChar(2000)
+  urlHash         String    @unique @map("url_hash") @db.VarChar(64)
+  mongoDocId      String?   @map("mongo_doc_id") @db.VarChar(100)
+
+  title           String?   @db.VarChar(500)
+  summary         String?   @db.Text
+  publishDate     DateTime? @map("publish_date")
+  bidder          String?   @db.VarChar(500)
+  location        String?   @db.VarChar(500)
+  bidStartTime    DateTime? @map("bid_start_time")
+  bidEndTime      DateTime? @map("bid_end_time")
+  amount          String?   @db.VarChar(200)
+  amountValue     Float?    @map("amount_value")
+  contact         String?   @db.VarChar(500)
+  searchQuery     String?   @map("search_query") @db.VarChar(500)
+  sourceName      String?   @map("source_name") @db.VarChar(200)
+  isRelevant      Boolean?  @map("is_relevant")
+  relevanceScore  Float?    @map("relevance_score")
+  noticeType      String?   @map("notice_type") @db.VarChar(30)
+  matchedKeywords String?   @map("matched_keywords") @db.VarChar(1000)
+  parserVersion   String?   @map("parser_version") @db.VarChar(50)
+  parseErrors     String?   @map("parse_errors") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdBy       String?   @map("created_by") @db.VarChar(50)
+  updatedBy       String?   @map("updated_by") @db.VarChar(50)
+
+  @@index([publishDate])
+  @@index([bidder])
+  @@index([location])
+  @@index([isRelevant])
+  @@index([noticeType])
+  @@index([searchQuery])
+  @@index([sourceName])
+  @@index([createdAt])
+  @@map("parsed_results")
+}
+
+/// 人工标注样本（用于训练分类模型）
+model LabeledSample {
+  id          BigInt    @id @default(autoincrement())
+  parsedId    BigInt?   @map("parsed_id")
+  url         String    @db.VarChar(2000)
+  urlHash     String    @unique @map("url_hash") @db.VarChar(64)
+  title       String?   @db.VarChar(500)
+  content     String?   @db.Text
+  searchQuery String?   @map("search_query") @db.VarChar(500)
+  sourceName  String?   @map("source_name") @db.VarChar(200)
+  label       Int?      // 1=相关, 0=不相关, NULL=未标注
+  labeledBy   String?   @map("labeled_by") @db.VarChar(50)
+  labeledAt   DateTime? @map("labeled_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([label])
+  @@index([searchQuery])
+  @@index([createdAt])
+  @@map("labeled_samples")
+}
+
+/// 通知渠道配置
+model NotifyChannel {
+  id            BigInt   @id @default(autoincrement())
+  name          String   @db.VarChar(100)
+  channelType   String   @map("channel_type") @db.VarChar(30) // qq, sms
+  config        String   @db.Text // JSON: QQ号/群号/API密钥等
+  enabled       Boolean  @default(true)
+  filterMonths  Int      @default(3) @map("filter_months")
+  filterFuture  Boolean  @default(true) @map("filter_future")
+  filterRegion  Boolean  @default(true) @map("filter_region")
+  excludeTypes  String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  messages NotifyMessage[]
+
+  @@map("notify_channels")
+}
+
+/// 已发送的通知消息
+model NotifyMessage {
+  id            BigInt   @id @default(autoincrement())
+  channelId     BigInt   @map("channel_id")
+  parsedId      BigInt   @map("parsed_id")
+  urlHash       String   @map("url_hash") @db.VarChar(64)
+  status        String   @default("pending") @db.VarChar(20) // pending, sent, failed
+  content       String?  @db.Text
+  errorMsg      String?  @map("error_msg") @db.Text
+  sentAt        DateTime? @map("sent_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  channel NotifyChannel @relation(fields: [channelId], references: [id])
+
+  @@unique([channelId, urlHash])
+  @@index([channelId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("notify_messages")
+}
+
 /// 已访问的URL（去重用）
 model VisitedUrl {
-  id        BigInt   @id @default(autoincrement())
-  url       String   @db.VarChar(2000)
-  urlHash   String   @unique @map("url_hash") @db.VarChar(64)
-  status    Int      @default(0) // HTTP status code
-  visitedAt DateTime @default(now()) @map("visited_at")
+  id          BigInt   @id @default(autoincrement())
+  url         String   @db.VarChar(2000)
+  urlHash     String   @unique @map("url_hash") @db.VarChar(64)
+  searchQuery String?  @map("search_query") @db.VarChar(500)
+  status      Int      @default(0)
+  visitedAt   DateTime @default(now()) @map("visited_at")
 
   @@index([urlHash])
   @@map("visited_urls")

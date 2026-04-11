@@ -1,0 +1,174 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>抓取结果</h1>
+
+<div class="admin-card" style="margin-bottom: 20px;">
+    <form method="get" action="{{ url_for('admin.results') }}" class="form-inline" style="flex-wrap:wrap;">
+        <input type="text" name="q" class="form-input" placeholder="搜索标题" value="{{ keyword_filter }}" style="min-width:150px;">
+        <input type="text" name="sq" class="form-input" placeholder="筛选搜索词" value="{{ query_filter }}" style="min-width:150px;">
+        <input type="text" name="domain" class="form-input" placeholder="筛选域名" value="{{ domain_filter }}" style="min-width:130px;">
+        <button type="submit" class="btn btn-primary btn-sm">筛选</button>
+        {% if keyword_filter or domain_filter or query_filter %}
+        <a href="{{ url_for('admin.results') }}" class="btn btn-ghost btn-sm">清除筛选</a>
+        {% endif %}
+        <span style="margin-left:auto; color:#999; font-size:13px;">共 {{ total }} 条结果</span>
+    </form>
+</div>
+
+<div class="admin-card">
+    <div id="batch-bar" style="display:none; margin-bottom:10px; padding:8px 12px; background:#fff7e6; border:1px solid #ffe58f; border-radius:4px; font-size:13px;">
+        已选 <strong id="sel-count">0</strong> 条
+        <button type="button" class="btn btn-danger btn-sm" style="margin-left:10px; font-size:12px;" onclick="batchDelete()">批量删除</button>
+        <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消选择</button>
+    </div>
+    <table class="admin-table" style="table-layout:fixed; width:100%;">
+        <thead>
+            <tr>
+                <th style="width:35px"><input type="checkbox" id="check-all" onclick="toggleAll(this)"></th>
+                <th style="width:45px">ID</th>
+                <th style="width:20%">标题</th>
+                <th style="width:100px">抓取入口</th>
+                <th style="width:110px">搜索词</th>
+                <th style="width:110px">域名</th>
+                <th style="width:60px">地区</th>
+                <th style="width:120px">抓取时间</th>
+                <th style="width:120px">原始链接</th>
+                <th style="width:50px">操作</th>
+            </tr>
+        </thead>
+        <tbody id="result-tbody">
+            {% for r in results %}
+            <tr data-id="{{ r.id }}">
+                <td><input type="checkbox" class="row-check" value="{{ r.id }}" onclick="updateBatch()"></td>
+                <td>{{ r.id }}</td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.title }}">
+                    {{ r.title }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.sourceName or '' }}">
+                    {{ r.sourceName or '-' }}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="{{ r.searchQuery or '' }}">
+                    {% if r.searchQuery %}
+                    <a href="#" class="search-link" style="color:#1890ff;"
+                       data-query="{{ r.searchQuery }}"
+                       data-source="{{ r.sourceName or '' }}"
+                       title="点击在搜索引擎中打开: {{ r.searchQuery }}">{{ r.searchQuery }}</a>
+                    {% else %}-{% endif %}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.domain or '' }}">
+                    <a href="{{ url_for('admin.results', domain=r.domain) }}" style="color:#1890ff;" title="点击筛选该域名">{{ r.domain or '-' }}</a>
+                </td>
+                <td>{{ r.region.name if r.region else '-' }}</td>
+                <td style="white-space:nowrap; font-size:13px; color:#666;">
+                    {{ r.createdAt|cst_time('%Y-%m-%d %H:%M') }}
+                </td>
+                <td>
+                    <a href="{{ r.url }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="display:inline-block; width:100px; text-align:center; font-size:11px;" title="{{ r.url }}">
+                        &#128279; 打开
+                    </a>
+                </td>
+                <td>
+                    <button type="button" class="btn btn-danger btn-sm" style="font-size:11px; padding:2px 6px;"
+                            onclick="ajaxDelete('{{ url_for('admin.result_delete', rid=r.id) }}', this)">删除</button>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not results %}
+            <tr>
+                <td colspan="10" style="text-align:center; padding:40px; color:#999;">暂无抓取结果</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="pagination" style="margin-top:20px;">
+        {% if page > 1 %}
+        <a href="{{ url_for('admin.results', page=page-1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">&laquo; 上一页</a>
+        {% endif %}
+        {% set start_page = [1, page - 3] | max %}
+        {% set end_page = [total_pages, page + 3] | min %}
+        {% if start_page > 1 %}
+        <a href="{{ url_for('admin.results', page=1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">1</a>
+        {% if start_page > 2 %}<span class="page-info">...</span>{% endif %}
+        {% endif %}
+        {% for p in range(start_page, end_page + 1) %}
+        <a href="{{ url_for('admin.results', page=p, q=keyword_filter, sq=query_filter, domain=domain_filter) }}"
+           class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
+        {% endfor %}
+        {% if end_page < total_pages %}
+        {% if end_page < total_pages - 1 %}<span class="page-info">...</span>{% endif %}
+        <a href="{{ url_for('admin.results', page=total_pages, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">{{ total_pages }}</a>
+        {% endif %}
+        {% if page < total_pages %}
+        <a href="{{ url_for('admin.results', page=page+1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">下一页 &raquo;</a>
+        {% endif %}
+        <span class="page-info">第 {{ page }}/{{ total_pages }} 页</span>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function ajaxDelete(url, btn) {
+    if (!confirm('确定删除？')) return;
+    fetch(url, {method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}})
+    .then(function(r){return r.json();})
+    .then(function(d){if(d.ok){btn.closest('tr').remove();updateBatch();showToast('已删除','success');}else{showToast('删除失败','error');}})
+    .catch(function(){showToast('请求失败','error');});
+}
+
+function toggleAll(master) {
+    document.querySelectorAll('.row-check').forEach(function(cb){cb.checked=master.checked;});
+    updateBatch();
+}
+function updateBatch() {
+    var checked = document.querySelectorAll('.row-check:checked');
+    var bar = document.getElementById('batch-bar');
+    document.getElementById('sel-count').textContent = checked.length;
+    bar.style.display = checked.length > 0 ? '' : 'none';
+}
+function clearSelection() {
+    document.querySelectorAll('.row-check').forEach(function(cb){cb.checked=false;});
+    document.getElementById('check-all').checked = false;
+    updateBatch();
+}
+function batchDelete() {
+    var ids = [];
+    document.querySelectorAll('.row-check:checked').forEach(function(cb){ids.push(parseInt(cb.value));});
+    if (!ids.length) return;
+    if (!confirm('确定批量删除选中的 ' + ids.length + ' 条记录？')) return;
+    fetch('{{ url_for("admin.result_batch_delete") }}', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body:JSON.stringify({ids:ids})
+    })
+    .then(function(r){return r.json();})
+    .then(function(d){
+        if(d.ok){
+            ids.forEach(function(id){var row=document.querySelector('tr[data-id="'+id+'"]');if(row)row.remove();});
+            updateBatch();
+            showToast('已删除 '+d.deleted+' 条','success');
+        } else {showToast(d.error||'删除失败','error');}
+    })
+    .catch(function(){showToast('请求失败','error');});
+}
+
+var SOURCE_MAP = {{ source_search_map | tojson }};
+document.querySelectorAll('.search-link').forEach(function(a) {
+    a.addEventListener('click', function(e) {
+        e.preventDefault();
+        var query = this.dataset.query;
+        var source = this.dataset.source;
+        var tpl = SOURCE_MAP[source];
+        var url;
+        if (tpl) {
+            url = tpl.replace('{keyword}', encodeURIComponent(query)).replace('{page}', '1').replace('{region}', '');
+        } else {
+            url = 'https://www.baidu.com/s?wd=' + encodeURIComponent(query);
+        }
+        window.open(url, '_blank');
+    });
+});
+</script>
+{% endblock %}

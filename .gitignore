@@ -23,3 +23,15 @@ env/
 node_modules/
 
 .uv/
+
+# 数据导出目录（不入 Git，单独传输）
+data/
+shangji-bao-release/
+shangji-bao-*.tar.gz
+
+# 模型文件
+*.bin
+*.ftz
+
+# prompts 目录（开发笔记）
+prompts/
