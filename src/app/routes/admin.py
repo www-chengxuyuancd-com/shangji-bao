@@ -574,7 +574,7 @@ def schedule_delete(sid):
 def parsed_list():
     prisma = get_prisma()
     page = request.args.get("page", 1, type=int)
-    per_page = 20
+    per_page = min(request.args.get("per_page", 20, type=int), 500)
     q = request.args.get("q", "").strip()
     bidder_q = request.args.get("bidder", "").strip()
     location_q = request.args.get("location", "").strip()
@@ -638,6 +638,7 @@ def parsed_list():
         "admin/parsed.html",
         items=items,
         page=page,
+        per_page=per_page,
         total=total,
         total_pages=total_pages,
         q=q,

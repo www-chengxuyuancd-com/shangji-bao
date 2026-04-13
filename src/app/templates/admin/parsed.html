@@ -20,6 +20,11 @@
                 <option value="yes" {{ 'selected' if relevant_q == 'yes' }}>相关</option>
                 <option value="no" {{ 'selected' if relevant_q == 'no' }}>不相关</option>
             </select>
+            <select name="per_page" class="form-input" style="width:80px;">
+                {% for n in [20, 50, 100, 200, 500] %}
+                <option value="{{ n }}" {{ 'selected' if per_page == n }}>{{ n }}条</option>
+                {% endfor %}
+            </select>
             <button type="submit" class="btn btn-primary btn-sm">筛选</button>
             {% if q or bidder_q or location_q or relevant_q or notice_type_q %}
             <a href="{{ url_for('admin.parsed_list') }}" class="btn btn-ghost btn-sm">清除</a>
@@ -48,7 +53,7 @@
 
 {% macro sort_link(field, label) %}
 {% set new_dir = 'asc' if sort_by == field and sort_dir == 'desc' else 'desc' %}
-<a href="{{ url_for('admin.parsed_list', q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, notice_type=notice_type_q, sort=field, dir=new_dir) }}"
+<a href="{{ url_for('admin.parsed_list', q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, notice_type=notice_type_q, sort=field, dir=new_dir, per_page=per_page) }}"
    style="color:inherit; text-decoration:none; white-space:nowrap;">
     {{ label }}
     {% if sort_by == field %}
@@ -147,24 +152,24 @@
     {% if total_pages > 1 %}
     <div class="pagination" style="margin-top:20px;">
         {% if page > 1 %}
-        <a href="{{ url_for('admin.parsed_list', page=page-1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">&laquo;</a>
+        <a href="{{ url_for('admin.parsed_list', page=page-1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">&laquo;</a>
         {% endif %}
         {% set sp = [1, page - 3] | max %}
         {% set ep = [total_pages, page + 3] | min %}
         {% if sp > 1 %}
-        <a href="{{ url_for('admin.parsed_list', page=1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">1</a>
+        <a href="{{ url_for('admin.parsed_list', page=1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">1</a>
         {% if sp > 2 %}<span class="page-info">...</span>{% endif %}
         {% endif %}
         {% for p in range(sp, ep + 1) %}
-        <a href="{{ url_for('admin.parsed_list', page=p, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}"
+        <a href="{{ url_for('admin.parsed_list', page=p, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}"
            class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
         {% endfor %}
         {% if ep < total_pages %}
         {% if ep < total_pages - 1 %}<span class="page-info">...</span>{% endif %}
-        <a href="{{ url_for('admin.parsed_list', page=total_pages, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">{{ total_pages }}</a>
+        <a href="{{ url_for('admin.parsed_list', page=total_pages, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">{{ total_pages }}</a>
         {% endif %}
         {% if page < total_pages %}
-        <a href="{{ url_for('admin.parsed_list', page=page+1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir) }}" class="page-link">&raquo;</a>
+        <a href="{{ url_for('admin.parsed_list', page=page+1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">&raquo;</a>
         {% endif %}
         <span class="page-info">{{ page }}/{{ total_pages }}</span>
     </div>
