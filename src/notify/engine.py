@@ -1,9 +1,8 @@
 """
 通知引擎。
 
-扫描已解析的数据，按过滤条件筛选，通过配置的渠道发送通知。
-去重：同一渠道 + 同一 urlHash 不会重复发送。
-流程：prepare → 生成 pending/skipped 记录 → send → 逐条发送 pending 记录。
+使用全局 NotifyConfig 过滤配置，扫描所有已解析数据，
+为每条数据标注是否符合发送条件及原因，再通过渠道发送。
 """
 import json
 import logging
@@ -14,6 +13,14 @@ from prisma import Prisma
 from src.notify.channels import get_channel
 
 logger = logging.getLogger(__name__)
+
+
+def _get_or_create_config(prisma):
+    """获取全局通知配置（单行），不存在则创建默认配置。"""
+    cfg = prisma.notifyconfig.find_first()
+    if not cfg:
+        cfg = prisma.notifyconfig.create(data={})
+    return cfg
 
 
 def _get_region_names_for_filter(prisma):
@@ -54,10 +61,37 @@ def _format_message(item) -> tuple[str, str]:
     return title, "\n".join(parts)
 
 
+def check_item_filter(item, cfg, exclude_types, region_names) -> str | None:
+    """检查一条 ParsedResult 是否应被跳过。返回跳过原因或 None（符合条件）。"""
+    now = datetime.now(timezone.utc)
+
+    if cfg.onlyRelevant and item.isRelevant is not True:
+        return "not_relevant"
+
+    if exclude_types and item.noticeType and item.noticeType in exclude_types:
+        return "type"
+
+    if cfg.filterRegion and not _match_region(item.location, region_names):
+        return "region"
+
+    months_ago = now - timedelta(days=cfg.filterMonths * 30)
+    date_ok = False
+    if item.publishDate and item.publishDate >= months_ago:
+        date_ok = True
+    if cfg.filterFuture and item.bidEndTime and item.bidEndTime >= now:
+        date_ok = True
+    if not item.publishDate and not item.bidEndTime:
+        date_ok = True
+    if not date_ok:
+        return "date"
+
+    return None
+
+
 def prepare_notifications(prisma: Prisma | None = None) -> dict:
     """
-    预生成通知消息记录：扫描符合条件的 ParsedResult，
-    对每个渠道生成 pending 或 skipped 的 NotifyMessage。
+    预生成通知消息：扫描所有 ParsedResult，
+    根据全局 NotifyConfig 为每个渠道生成 pending 或 skipped 的 NotifyMessage。
     """
     own_prisma = prisma is None
     if own_prisma:
@@ -65,34 +99,26 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
         prisma.connect()
 
     try:
+        cfg = _get_or_create_config(prisma)
         channels = prisma.notifychannel.find_many(where={"enabled": True})
         if not channels:
             return {"prepared": 0, "skipped": 0, "existing": 0, "errors": ["没有启用的通知渠道"]}
 
+        exclude_types = set()
+        if cfg.excludeTypes:
+            exclude_types = {t.strip() for t in cfg.excludeTypes.split(",") if t.strip()}
+
         region_names = _get_region_names_for_filter(prisma)
+
+        all_items = prisma.parsedresult.find_many(
+            order={"publishDate": "desc"},
+            take=1000,
+        )
+
         stats = {"prepared": 0, "skipped": 0, "existing": 0, "errors": []}
 
         for ch in channels:
-            exclude_types = set()
-            if ch.excludeTypes:
-                exclude_types = {t.strip() for t in ch.excludeTypes.split(",") if t.strip()}
-
-            now = datetime.now(timezone.utc)
-            months_ago = now - timedelta(days=ch.filterMonths * 30)
-
-            where_conditions = [{"isRelevant": True}]
-            date_or = [{"publishDate": {"gte": months_ago}}]
-            if ch.filterFuture:
-                date_or.append({"bidEndTime": {"gte": now}})
-            where_conditions.append({"OR": date_or})
-
-            items = prisma.parsedresult.find_many(
-                where={"AND": where_conditions},
-                order={"publishDate": "desc"},
-                take=500,
-            )
-
-            for item in items:
+            for item in all_items:
                 existing = prisma.notifymessage.find_first(
                     where={"channelId": ch.id, "urlHash": item.urlHash}
                 )
@@ -101,12 +127,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                     continue
 
                 title, content = _format_message(item)
-                skip_reason = None
-
-                if exclude_types and item.noticeType and item.noticeType in exclude_types:
-                    skip_reason = "type"
-                elif ch.filterRegion and not _match_region(item.location, region_names):
-                    skip_reason = "region"
+                skip_reason = check_item_filter(item, cfg, exclude_types, region_names)
 
                 prisma.notifymessage.create(data={
                     "channelId": ch.id,
@@ -133,9 +154,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
 
 
 def send_notifications(prisma: Prisma | None = None) -> dict:
-    """
-    先 prepare，再发送所有 pending 状态的消息。
-    """
+    """先 prepare，再发送所有 pending 状态的消息。"""
     own_prisma = prisma is None
     if own_prisma:
         prisma = Prisma()

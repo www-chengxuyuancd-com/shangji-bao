@@ -752,18 +752,28 @@ def parsed_batch_delete():
 
 # ==================== 消息通知 ====================
 
+
+def _get_notify_config(prisma):
+    cfg = prisma.notifyconfig.find_first()
+    if not cfg:
+        cfg = prisma.notifyconfig.create(data={})
+    return cfg
+
+
 @admin_bp.route("/notify")
 @login_required
 def notify_list():
     from datetime import datetime, timedelta, timezone
 
     prisma = get_prisma()
+    cfg = _get_notify_config(prisma)
     channels = prisma.notifychannel.find_many(order={"id": "desc"})
     page = request.args.get("page", 1, type=int)
-    per_page = 30
+    per_page = min(request.args.get("per_page", 30, type=int), 500)
     status_filter = request.args.get("status", "").strip()
     days_filter = request.args.get("days", "", type=str).strip()
     q = request.args.get("q", "").strip()
+    notice_type_filter = request.args.get("notice_type", "").strip()
 
     msg_where: dict = {}
     if status_filter:
@@ -777,6 +787,8 @@ def notify_list():
             pass
     if q:
         msg_where["title"] = {"contains": q}
+    if notice_type_filter:
+        msg_where["noticeType"] = notice_type_filter
 
     total = prisma.notifymessage.count(where=msg_where)
     messages = prisma.notifymessage.find_many(
@@ -795,19 +807,47 @@ def notify_list():
 
     return render_template(
         "admin/notify.html",
+        cfg=cfg,
         channels=channels,
         messages=messages,
         page=page,
+        per_page=per_page,
         total=total,
         total_pages=total_pages,
         status_filter=status_filter,
         days_filter=days_filter,
         q=q,
+        notice_type_filter=notice_type_filter,
         sent_count=sent_count,
         failed_count=failed_count,
         pending_count=pending_count,
         skipped_count=skipped_count,
     )
+
+
+@admin_bp.route("/notify/config", methods=["POST"])
+@login_required
+def notify_config_save():
+    prisma = get_prisma()
+    cfg = _get_notify_config(prisma)
+    filter_months = int(request.form.get("filter_months", "3") or "3")
+    filter_future = request.form.get("filter_future") == "on"
+    filter_region = request.form.get("filter_region") == "on"
+    only_relevant = request.form.get("only_relevant") == "on"
+    exclude_types = ",".join(request.form.getlist("exclude_types"))
+
+    prisma.notifyconfig.update(
+        where={"id": cfg.id},
+        data={
+            "filterMonths": filter_months,
+            "filterFuture": filter_future,
+            "filterRegion": filter_region,
+            "onlyRelevant": only_relevant,
+            "excludeTypes": exclude_types or None,
+        },
+    )
+    flash("通知过滤配置已保存", "success")
+    return redirect(url_for("admin.notify_list"))
 
 
 @admin_bp.route("/notify/channel/add", methods=["POST"])
@@ -816,10 +856,6 @@ def notify_channel_add():
     name = request.form.get("name", "").strip()
     channel_type = request.form.get("channel_type", "qq").strip()
     config_str = request.form.get("config", "{}").strip()
-    filter_months = int(request.form.get("filter_months", "3") or "3")
-    filter_future = request.form.get("filter_future") == "on"
-    filter_region = request.form.get("filter_region") == "on"
-    exclude_types = ",".join(request.form.getlist("exclude_types"))
 
     if not name:
         flash("渠道名称不能为空", "error")
@@ -837,10 +873,6 @@ def notify_channel_add():
         "name": name,
         "channelType": channel_type,
         "config": config_str,
-        "filterMonths": filter_months,
-        "filterFuture": filter_future,
-        "filterRegion": filter_region,
-        "excludeTypes": exclude_types or None,
     })
     flash("通知渠道添加成功", "success")
     return redirect(url_for("admin.notify_list"))
@@ -858,10 +890,6 @@ def notify_channel_edit(cid):
     name = request.form.get("name", "").strip()
     channel_type = request.form.get("channel_type", "qq").strip()
     config_str = request.form.get("config", "{}").strip()
-    filter_months = int(request.form.get("filter_months", "3") or "3")
-    filter_future = request.form.get("filter_future") == "on"
-    filter_region = request.form.get("filter_region") == "on"
-    exclude_types = ",".join(request.form.getlist("exclude_types"))
 
     if not name:
         flash("渠道名称不能为空", "error")
@@ -880,10 +908,6 @@ def notify_channel_edit(cid):
             "name": name,
             "channelType": channel_type,
             "config": config_str,
-            "filterMonths": filter_months,
-            "filterFuture": filter_future,
-            "filterRegion": filter_region,
-            "excludeTypes": exclude_types or None,
         },
     )
     flash("渠道配置已更新", "success")

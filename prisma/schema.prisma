@@ -226,7 +226,21 @@ model LabeledSample {
   @@map("labeled_samples")
 }
 
-/// 通知渠道配置
+/// 通知过滤配置（全局，单行）
+model NotifyConfig {
+  id            BigInt   @id @default(autoincrement())
+  filterMonths  Int      @default(3) @map("filter_months")
+  filterFuture  Boolean  @default(true) @map("filter_future")
+  filterRegion  Boolean  @default(true) @map("filter_region")
+  onlyRelevant  Boolean  @default(true) @map("only_relevant")
+  excludeTypes  String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("notify_config")
+}
+
+/// 通知渠道配置（仅连接信息）
 model NotifyChannel {
   id            BigInt   @id @default(autoincrement())
   name          String   @db.VarChar(100)
@@ -236,7 +250,7 @@ model NotifyChannel {
   filterMonths  Int      @default(3) @map("filter_months")
   filterFuture  Boolean  @default(true) @map("filter_future")
   filterRegion  Boolean  @default(true) @map("filter_region")
-  excludeTypes  String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
+  excludeTypes  String?  @map("exclude_types") @db.VarChar(500)
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
