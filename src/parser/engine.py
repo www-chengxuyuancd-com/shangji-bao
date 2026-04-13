@@ -16,6 +16,7 @@ from pymongo import MongoClient
 from src.parser.base import PARSER_VERSION
 from src.parser.extractors import (
     html_to_text,
+    is_valid_content,
     PublishDateExtractor,
     BidderExtractor,
     LocationExtractor,
@@ -51,6 +52,12 @@ def parse_one(html: str, url: str, context: dict) -> dict:
     text = html_to_text(html)
     result = {}
     errors = []
+
+    if not is_valid_content(text):
+        result["_invalid"] = True
+        errors.append("content_invalid: 页面内容无效（JS/CSS/反爬页面），无有效中文内容")
+        result["_errors"] = errors
+        return result
 
     for field_name, extractor in EXTRACTORS.items():
         try:
@@ -123,6 +130,24 @@ def _run_parse_job(job_id: int):
 
             try:
                 result = parse_one(html, url, context)
+
+                if result.get("_invalid"):
+                    prisma.parsedresult.create(data={
+                        "url": url,
+                        "urlHash": url_hash,
+                        "mongoDocId": str(doc["_id"]),
+                        "title": context.get("title") or meta.get("title"),
+                        "searchQuery": context.get("search_query"),
+                        "sourceName": context.get("source_name"),
+                        "isRelevant": False,
+                        "parserVersion": PARSER_VERSION,
+                        "parseErrors": "\n".join(result.get("_errors", [])),
+                        "createdBy": "system",
+                    })
+                    error_count += 1
+                    error_logs.append(f"[{url[:60]}] 内容无效(JS/反爬)")
+                    done += 1
+                    continue
 
                 amount_data = result.get("amount")
                 amount_display = None

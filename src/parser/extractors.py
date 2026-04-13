@@ -10,15 +10,43 @@ from src.parser.base import FieldExtractor
 
 # ====================== 工具函数 ======================
 
+_SCRIPT_STYLE_RE = re.compile(
+    r"<\s*(script|style|noscript)[^>]*>.*?</\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _REMOVE_TAGS_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+_JS_JUNK_RE = re.compile(
+    r"(?:var\s+\w+\s*=|function\s*\w*\s*\(|document\.\w|window\.\w|"
+    r"\.getElementById|\.createElement|\.innerHTML|new\s+XMLHttpRequest|"
+    r"\.addEventListener|\.appendChild|console\.log|typeof\s+\w|"
+    r"try\s*\{|catch\s*\(|\.style\.\w|\.className|return\s+(?:true|false|null))"
+)
+_CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def html_to_text(html: str) -> str:
-    """粗略去除 HTML 标签，返回纯文本。"""
-    text = _REMOVE_TAGS_RE.sub(" ", html)
+    """去除 HTML 标签、script/style/注释，返回纯中文文本。"""
+    text = _COMMENT_RE.sub(" ", html)
+    text = _SCRIPT_STYLE_RE.sub(" ", text)
+    text = _REMOVE_TAGS_RE.sub(" ", text)
     text = _WHITESPACE_RE.sub(" ", text)
     return text.strip()
+
+
+def is_valid_content(text: str, min_chinese_ratio: float = 0.15, min_chinese_chars: int = 30) -> bool:
+    """检测提取出的文本是否为有效内容（非纯 JS/CSS/乱码）。"""
+    if not text or len(text.strip()) < 20:
+        return False
+    if _JS_JUNK_RE.search(text[:1000]):
+        chinese_in_first_1k = len(_CHINESE_RE.findall(text[:1000]))
+        if chinese_in_first_1k < min_chinese_chars:
+            return False
+    total_chinese = len(_CHINESE_RE.findall(text[:2000]))
+    if total_chinese < min_chinese_chars:
+        return False
+    return True
 
 
 # ====================== 日期提取 ======================
@@ -249,27 +277,57 @@ class TitleExtractor(FieldExtractor):
 
 # ====================== 摘要提取 ======================
 
-_JUNK_RE = re.compile(r"(?:首页|网站地图|版权所有|ICP备|Copyright|All Rights Reserved|关于我们|友情链接|设为首页|加入收藏)", re.IGNORECASE)
+_JUNK_RE = re.compile(
+    r"(?:首页|网站地图|版权所有|ICP备|Copyright|All Rights Reserved|"
+    r"关于我们|友情链接|设为首页|加入收藏|免责声明|"
+    r"登录\s*[\|｜]\s*注册|登录\s+注册|欢迎您|退出登录|"
+    r"华北\s.*?华中|华东\s.*?华南|东北\s.*?西北|"
+    r"var\s+\w+\s*=|function\s*\w*\s*\(|document\.\w|window\.\w|"
+    r"\.getElementById|\.createElement|\.innerHTML|new\s+XMLHttpRequest|"
+    r"\.addEventListener|console\.log|return\s+(?:true|false)|typeof\s+\w|"
+    r"\$\(|jQuery|\.css\(|\.ajax\(|\.ready\()",
+    re.IGNORECASE,
+)
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；\n])\s*|(?<=\.\s)|(?<=;\s)")
+_NAV_JUNK_RE = re.compile(
+    r"^(?:.*?(?:登录|注册|分站|更多|首页|导航|北京|上海|广东|华北|华东|华南|东北|西北|华中|西南).*){3,}$",
+    re.IGNORECASE,
+)
+_SHORT_FRAG_RE = re.compile(r"^[\w\s\-\.·|/、，,]+$")
 
 
 class SummaryExtractor(FieldExtractor):
-    """提取前几段有意义的文字作为摘要。"""
+    """提取前几段有意义的文字作为摘要，过滤导航/JS/垃圾内容。"""
     name = "rule_summary"
 
     def extract(self, text: str, html: str, context: dict) -> str | None:
-        paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 15]
+        segments = _SENTENCE_SPLIT_RE.split(text)
+        if len(segments) <= 1:
+            segments = [text[i:i+200] for i in range(0, min(len(text), 3000), 200)]
+
         meaningful = []
-        for p in paragraphs:
-            if _JUNK_RE.search(p):
+        for seg in segments:
+            seg = seg.strip()
+            if len(seg) < 10:
                 continue
-            meaningful.append(p)
+            if _JUNK_RE.search(seg):
+                continue
+            if _NAV_JUNK_RE.search(seg):
+                continue
+            if _SHORT_FRAG_RE.match(seg) and len(seg) < 30:
+                continue
+            chinese_count = len(_CHINESE_RE.findall(seg))
+            if chinese_count < 5:
+                continue
+            meaningful.append(seg)
             if sum(len(s) for s in meaningful) > 300:
                 break
 
         if meaningful:
-            summary = " ".join(meaningful)
-            return summary[:500]
-        return text[:500] if len(text) > 10 else None
+            return " ".join(meaningful)[:500]
+        return None
 
 
 # ====================== 公告类型识别 ======================
