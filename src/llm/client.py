@@ -76,16 +76,18 @@ def predict_label(title: str, content: str, search_query: str) -> dict | None:
     )
 
     try:
-        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=90)
-        resp = client.chat.completions.create(
-            model=cfg["model"],
-            messages=[
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=60)
+        kwargs = {
+            "model": cfg["model"],
+            "messages": [
                 {"role": "system", "content": "你是一个专业的招投标信息分类助手，只输出 JSON。"},
                 {"role": "user", "content": user_message},
             ],
-            temperature=cfg["temperature"],
-            max_tokens=cfg["max_tokens"],
-        )
+            "temperature": cfg["temperature"],
+            "max_tokens": cfg["max_tokens"],
+            "response_format": {"type": "json_object"},
+        }
+        resp = client.chat.completions.create(**kwargs)
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()

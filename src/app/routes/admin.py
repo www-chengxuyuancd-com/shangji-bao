@@ -1284,52 +1284,40 @@ def labeling_train():
     return redirect(url_for("admin.labeling_list"))
 
 
-@admin_bp.route("/labeling/ai-predict", methods=["POST"])
+@admin_bp.route("/labeling/ai-predict-one", methods=["POST"])
 @login_required
-def labeling_ai_predict():
-    """AI 预标注：对选中的未标注样本调用大模型预测"""
+def labeling_ai_predict_one():
+    """AI 预标注单条记录"""
     from datetime import datetime, timezone
     from src.llm.client import predict_label
 
     data = request.get_json(silent=True) or {}
-    ids = data.get("ids", [])
-    if not ids:
-        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+    sid = data.get("id")
+    if not sid:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
 
     prisma = get_prisma()
-    predicted = 0
-    failed = 0
-    results = []
+    sample = prisma.labeledsample.find_unique(where={"id": int(sid)})
+    if not sample:
+        return jsonify({"ok": False, "error": "记录不存在"}), 404
 
-    for sid in ids:
-        try:
-            sample = prisma.labeledsample.find_unique(where={"id": int(sid)})
-            if not sample:
-                failed += 1
-                continue
+    result = predict_label(
+        title=sample.title or "",
+        content=sample.content or "",
+        search_query=sample.searchQuery or "",
+    )
+    if not result or result["label"] not in (0, 1):
+        return jsonify({"ok": False, "error": "AI 判断失败，请检查大模型配置"}), 500
 
-            result = predict_label(
-                title=sample.title or "",
-                content=sample.content or "",
-                search_query=sample.searchQuery or "",
-            )
-            if result and result["label"] in (0, 1):
-                prisma.labeledsample.update(
-                    where={"id": int(sid)},
-                    data={
-                        "label": result["label"],
-                        "labeledBy": "ai",
-                        "labeledAt": datetime.now(timezone.utc),
-                    },
-                )
-                predicted += 1
-                results.append({"id": int(sid), "label": result["label"], "reason": result.get("reason", "")})
-            else:
-                failed += 1
-        except Exception:
-            failed += 1
-
-    return jsonify({"ok": True, "predicted": predicted, "failed": failed, "results": results})
+    prisma.labeledsample.update(
+        where={"id": int(sid)},
+        data={
+            "label": result["label"],
+            "labeledBy": "ai",
+            "labeledAt": datetime.now(timezone.utc),
+        },
+    )
+    return jsonify({"ok": True, "id": int(sid), "label": result["label"], "reason": result.get("reason", "")})
 
 
 # ==================== 大模型配置 ====================

@@ -276,10 +276,15 @@ function batchLabel(label) {
     .catch(function(){showToast('请求失败','error');});
 }
 
+var _aiRunning = false;
+var _aiAbort = false;
+
 function aiPredict() {
     var checks = document.querySelectorAll('.row-check:checked');
     if(checks.length === 0) return;
-    if(!confirm('使用 AI 对选中的 ' + checks.length + ' 条记录进行预标注？\n（需要已配置大模型，逐条调用可能需要一些时间）')) return;
+    if(_aiRunning) { showToast('AI 正在标注中，请等待完成', 'info'); return; }
+    if(!confirm('使用 AI 对选中的 ' + checks.length + ' 条记录进行预标注？')) return;
+
     var ids = [];
     for(var i=0;i<checks.length;i++) ids.push(parseInt(checks[i].value));
 
@@ -288,29 +293,49 @@ function aiPredict() {
         aiBar = document.createElement('div');
         aiBar.id = 'ai-progress';
         aiBar.style.cssText = 'margin-bottom:10px; padding:10px 14px; background:#f9f0ff; border:1px solid #d3adf7; border-radius:4px; font-size:13px;';
-        var bar = document.getElementById('batch-bar');
-        bar.parentNode.insertBefore(aiBar, bar);
+        var card = document.getElementById('batch-bar').parentNode;
+        card.insertBefore(aiBar, document.getElementById('batch-bar'));
     }
     aiBar.style.display = '';
-    aiBar.innerHTML = '<span style="color:#722ed1;">🤖 AI 正在标注中，请稍候... (' + ids.length + ' 条)</span>';
+    _aiRunning = true;
+    _aiAbort = false;
 
-    fetch('{{ url_for("admin.labeling_ai_predict") }}', {
-        method:'POST',
-        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-        body: JSON.stringify({ids: ids})
-    })
-    .then(function(r){return r.json();})
-    .then(function(d){
-        if(d.ok){
-            var results = d.results || [];
-            var aiBadge = ' <span style="font-size:10px; background:#f9f0ff; color:#722ed1; padding:1px 4px; border-radius:3px; margin-left:2px;">AI</span>';
-            for(var i=0;i<results.length;i++){
-                var r = results[i];
-                var labelCell = document.getElementById('label-'+r.id);
-                var btnRel = document.getElementById('btn-rel-'+r.id);
-                var btnIrr = document.getElementById('btn-irr-'+r.id);
+    var total = ids.length, done = 0, ok = 0, fail = 0;
+    var aiBadge = ' <span style="font-size:10px; background:#f9f0ff; color:#722ed1; padding:1px 4px; border-radius:3px; margin-left:2px;">AI</span>';
+
+    function updateProgress() {
+        aiBar.innerHTML = '<span style="color:#722ed1;">🤖 AI 标注中 ' + done + '/' + total
+            + '（成功 <strong style="color:#52c41a">' + ok + '</strong> 失败 <strong style="color:#ff4d4f">' + fail + '</strong>）</span>'
+            + ' <button onclick="_aiAbort=true" style="margin-left:8px; font-size:11px; padding:1px 8px; cursor:pointer; border:1px solid #d3adf7; border-radius:3px; background:#fff; color:#722ed1;">停止</button>';
+    }
+
+    function predictNext(idx) {
+        if(_aiAbort || idx >= ids.length) {
+            _aiRunning = false;
+            var msg = _aiAbort ? '已停止' : '完成';
+            aiBar.innerHTML = '<span style="color:#52c41a;">✔ AI 预标注' + msg + '：成功 ' + ok + ' 条，失败 ' + fail + ' 条</span>';
+            setTimeout(function(){ aiBar.style.display = 'none'; }, 8000);
+            showToast('AI 预标注' + msg + '：成功 ' + ok + ' 条，失败 ' + fail + ' 条', 'success');
+            clearSelection();
+            return;
+        }
+        updateProgress();
+        var sid = ids[idx];
+        fetch('{{ url_for("admin.labeling_ai_predict_one") }}', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+            body: JSON.stringify({id: sid})
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            done++;
+            if(d.ok){
+                ok++;
+                var labelCell = document.getElementById('label-'+d.id);
+                var btnRel = document.getElementById('btn-rel-'+d.id);
+                var btnIrr = document.getElementById('btn-irr-'+d.id);
                 if(labelCell){
-                    if(r.label === 1){
+                    if(d.label === 1){
                         labelCell.innerHTML = '<span style="color:#52c41a; font-size:12px;">✔ 相关</span>' + aiBadge;
                         if(btnRel) btnRel.className = 'btn btn-sm btn-primary';
                         if(btnIrr) btnIrr.className = 'btn btn-sm btn-ghost';
@@ -320,24 +345,15 @@ function aiPredict() {
                         if(btnIrr) btnIrr.className = 'btn btn-sm btn-danger';
                     }
                 }
-            }
-            aiBar.innerHTML = '<span style="color:#52c41a;">✔ AI 预标注完成：成功 '+d.predicted+' 条，失败 '+d.failed+' 条</span>';
-            setTimeout(function(){ aiBar.style.display = 'none'; }, 5000);
-            showToast('AI 预标注完成：成功 '+d.predicted+' 条，失败 '+d.failed+' 条','success');
-            clearSelection();
-        } else {
-            aiBar.innerHTML = '<span style="color:#ff4d4f;">✘ ' + (d.error||'AI 标注失败') + '</span>';
-            setTimeout(function(){ aiBar.style.display = 'none'; }, 5000);
-            showToast(d.error||'AI 标注失败','error');
-            clearSelection();
-        }
-    })
-    .catch(function(){
-        aiBar.innerHTML = '<span style="color:#ff4d4f;">✘ 请求失败，请检查大模型配置</span>';
-        setTimeout(function(){ aiBar.style.display = 'none'; }, 5000);
-        showToast('请求失败，请检查大模型配置','error');
-        clearSelection();
-    });
+            } else { fail++; }
+            predictNext(idx + 1);
+        })
+        .catch(function(){
+            done++; fail++;
+            predictNext(idx + 1);
+        });
+    }
+    predictNext(0);
 }
 
 function batchDelete() {
