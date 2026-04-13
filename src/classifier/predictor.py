@@ -46,13 +46,16 @@ class RelevancePredictor:
     def available(self) -> bool:
         return self._model is not None
 
-    def predict(self, text: str) -> dict | None:
+    def predict(self, text: str, title: str = "") -> dict | None:
+        """预测文本相关性。title 会被重复 3 次以提高权重。"""
         if not self._model:
             return None
         try:
             import jieba
-            words = " ".join(jieba.cut(text[:2000]))
-            labels, probs = self._model.predict(words)
+            title_words = " ".join(jieba.cut(title)) if title else ""
+            body_words = " ".join(jieba.cut(text[:2000]))
+            weighted = f"{title_words} {title_words} {title_words} {body_words}".strip()
+            labels, probs = self._model.predict(weighted)
             label_str = labels[0].replace("__label__", "")
             confidence = float(probs[0])
             return {"label": label_str, "confidence": round(confidence, 4)}

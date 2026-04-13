@@ -759,11 +759,12 @@ def notify_list():
     prisma = get_prisma()
     channels = prisma.notifychannel.find_many(order={"id": "desc"})
     page = request.args.get("page", 1, type=int)
-    per_page = 20
+    per_page = 30
     status_filter = request.args.get("status", "").strip()
     days_filter = request.args.get("days", "", type=str).strip()
+    q = request.args.get("q", "").strip()
 
-    msg_where = {}
+    msg_where: dict = {}
     if status_filter:
         msg_where["status"] = status_filter
     if days_filter:
@@ -773,6 +774,8 @@ def notify_list():
             msg_where["createdAt"] = {"gte": since}
         except ValueError:
             pass
+    if q:
+        msg_where["title"] = {"contains": q}
 
     total = prisma.notifymessage.count(where=msg_where)
     messages = prisma.notifymessage.find_many(
@@ -786,68 +789,23 @@ def notify_list():
 
     sent_count = prisma.notifymessage.count(where={"status": "sent"})
     failed_count = prisma.notifymessage.count(where={"status": "failed"})
-
-    pending_count = 0
-    eligible_count = 0
-    pending_items = []
-    pending_total = 0
-    pending_total_pages = 0
-    enabled_channels = [c for c in channels if c.enabled]
-
-    now = datetime.now(timezone.utc)
-    if enabled_channels:
-        for ch in enabled_channels:
-            months_ago = now - timedelta(days=ch.filterMonths * 30)
-            date_or = [{"publishDate": {"gte": months_ago}}]
-            if ch.filterFuture:
-                date_or.append({"bidEndTime": {"gte": now}})
-            ch_eligible = prisma.parsedresult.count(
-                where={"AND": [{"isRelevant": True}, {"OR": date_or}]}
-            )
-            ch_sent = prisma.notifymessage.count(
-                where={"channelId": ch.id, "status": "sent"}
-            )
-            eligible_count = max(eligible_count, ch_eligible)
-            pending_count += max(0, ch_eligible - ch_sent)
-
-    if status_filter == "pending" and enabled_channels:
-        sent_hashes_all = set()
-        for ch in enabled_channels:
-            sent_msgs = prisma.notifymessage.find_many(
-                where={"channelId": ch.id, "status": "sent"},
-                distinct=["urlHash"],
-            )
-            for sm in sent_msgs:
-                sent_hashes_all.add(sm.urlHash)
-
-        combined_date_or = [{"publishDate": {"gte": now - timedelta(days=max(c.filterMonths for c in enabled_channels) * 30)}}]
-        if any(c.filterFuture for c in enabled_channels):
-            combined_date_or.append({"bidEndTime": {"gte": now}})
-
-        all_eligible = prisma.parsedresult.find_many(
-            where={"AND": [{"isRelevant": True}, {"OR": combined_date_or}]},
-            order={"publishDate": "desc"},
-        )
-        pending_all = [p for p in all_eligible if p.urlHash not in sent_hashes_all]
-        pending_total = len(pending_all)
-        pending_total_pages = (pending_total + per_page - 1) // per_page
-        start = (page - 1) * per_page
-        pending_items = pending_all[start:start + per_page]
+    pending_count = prisma.notifymessage.count(where={"status": "pending"})
+    skipped_count = prisma.notifymessage.count(where={"status": "skipped"})
 
     return render_template(
         "admin/notify.html",
         channels=channels,
         messages=messages,
         page=page,
-        total=total if status_filter != "pending" else pending_total,
-        total_pages=total_pages if status_filter != "pending" else pending_total_pages,
+        total=total,
+        total_pages=total_pages,
         status_filter=status_filter,
         days_filter=days_filter,
+        q=q,
         sent_count=sent_count,
         failed_count=failed_count,
         pending_count=pending_count,
-        eligible_count=eligible_count,
-        pending_items=pending_items,
+        skipped_count=skipped_count,
     )
 
 
@@ -954,6 +912,19 @@ def notify_channel_delete(cid):
     return redirect(url_for("admin.notify_list"))
 
 
+@admin_bp.route("/notify/prepare", methods=["POST"])
+@login_required
+def notify_prepare():
+    """预生成待发送消息（不实际发送），可先预览再发送。"""
+    from src.notify.engine import prepare_notifications
+    stats = prepare_notifications()
+    msg = f"预生成完成: 待发送 {stats['prepared']}，跳过 {stats['skipped']}，已存在 {stats['existing']}"
+    if stats["errors"]:
+        msg += f"\n错误: {'; '.join(stats['errors'][:3])}"
+    flash(msg, "success")
+    return redirect(url_for("admin.notify_list", status="pending"))
+
+
 @admin_bp.route("/notify/send", methods=["POST"])
 @login_required
 def notify_send():
@@ -964,6 +935,72 @@ def notify_send():
         msg += f"\n错误: {'; '.join(stats['errors'][:3])}"
     flash(msg, "success" if stats["failed"] == 0 else "error")
     return redirect(url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/msg/<int:mid>/skip", methods=["POST"])
+@login_required
+def notify_msg_skip(mid):
+    """手动标记某条消息为不发送。"""
+    prisma = get_prisma()
+    msg = prisma.notifymessage.find_first(where={"id": mid})
+    if msg and msg.status in ("pending", "failed"):
+        prisma.notifymessage.update(
+            where={"id": mid},
+            data={"status": "skipped", "skipReason": "manual"},
+        )
+        flash(f"消息 #{mid} 已标记为不发送", "success")
+    else:
+        flash("消息不存在或状态不允许此操作", "error")
+    return redirect(request.referrer or url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/msg/<int:mid>/unskip", methods=["POST"])
+@login_required
+def notify_msg_unskip(mid):
+    """把跳过的消息恢复为待发送。"""
+    prisma = get_prisma()
+    msg = prisma.notifymessage.find_first(where={"id": mid})
+    if msg and msg.status == "skipped":
+        prisma.notifymessage.update(
+            where={"id": mid},
+            data={"status": "pending", "skipReason": None},
+        )
+        flash(f"消息 #{mid} 已恢复为待发送", "success")
+    else:
+        flash("消息不存在或状态不允许此操作", "error")
+    return redirect(request.referrer or url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/msg/batch-skip", methods=["POST"])
+@login_required
+def notify_msg_batch_skip():
+    """批量标记消息为不发送。"""
+    prisma = get_prisma()
+    ids = request.form.getlist("msg_ids", type=int)
+    if ids:
+        count = prisma.notifymessage.update_many(
+            where={"id": {"in": ids}, "status": {"in": ["pending", "failed"]}},
+            data={"status": "skipped", "skipReason": "manual"},
+        )
+        flash(f"已标记 {count} 条消息为不发送", "success")
+    return redirect(request.referrer or url_for("admin.notify_list"))
+
+
+@admin_bp.route("/notify/msg/<int:mid>/retry", methods=["POST"])
+@login_required
+def notify_msg_retry(mid):
+    """把失败的消息恢复为待发送。"""
+    prisma = get_prisma()
+    msg = prisma.notifymessage.find_first(where={"id": mid})
+    if msg and msg.status == "failed":
+        prisma.notifymessage.update(
+            where={"id": mid},
+            data={"status": "pending", "errorMsg": None},
+        )
+        flash(f"消息 #{mid} 已恢复为待发送", "success")
+    else:
+        flash("消息不存在或状态不允许此操作", "error")
+    return redirect(request.referrer or url_for("admin.notify_list"))
 
 
 # ==================== 数据标注 ====================

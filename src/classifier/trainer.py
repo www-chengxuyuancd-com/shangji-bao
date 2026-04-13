@@ -27,12 +27,15 @@ def prepare_training_data(prisma) -> str:
     fd, path = tempfile.mkstemp(suffix=".txt", prefix="ft_train_")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         for s in samples:
-            text = (s.content or s.title or "")[:2000]
-            if not text.strip():
+            title = (s.title or "").strip()
+            body = (s.content or "").strip()
+            if not title and not body:
                 continue
             label = "__label__relevant" if s.label == 1 else "__label__irrelevant"
-            words = " ".join(jieba.cut(text))
-            f.write(f"{label} {words}\n")
+            title_words = " ".join(jieba.cut(title)) if title else ""
+            body_words = " ".join(jieba.cut(body[:2000])) if body else ""
+            weighted = f"{title_words} {title_words} {title_words} {body_words}".strip()
+            f.write(f"{label} {weighted}\n")
 
     return path
 

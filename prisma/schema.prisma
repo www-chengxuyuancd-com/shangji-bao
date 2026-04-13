@@ -245,15 +245,20 @@ model NotifyChannel {
   @@map("notify_channels")
 }
 
-/// 已发送的通知消息
+/// 通知消息（待发送 / 已发送 / 跳过 / 失败）
 model NotifyMessage {
   id            BigInt   @id @default(autoincrement())
   channelId     BigInt   @map("channel_id")
   parsedId      BigInt   @map("parsed_id")
   urlHash       String   @map("url_hash") @db.VarChar(64)
-  status        String   @default("pending") @db.VarChar(20) // pending, sent, failed
+  status        String   @default("pending") @db.VarChar(20) // pending, sent, failed, skipped
+  title         String?  @db.VarChar(500)
+  url           String?  @db.VarChar(2000)
+  noticeType    String?  @map("notice_type") @db.VarChar(30)
+  publishDate   DateTime? @map("publish_date")
   content       String?  @db.Text
   errorMsg      String?  @map("error_msg") @db.Text
+  skipReason    String?  @map("skip_reason") @db.VarChar(100) // manual, region, type, duplicate
   sentAt        DateTime? @map("sent_at")
   createdAt     DateTime @default(now()) @map("created_at")
 
@@ -263,6 +268,7 @@ model NotifyMessage {
   @@index([channelId])
   @@index([status])
   @@index([createdAt])
+  @@index([parsedId])
   @@map("notify_messages")
 }
 

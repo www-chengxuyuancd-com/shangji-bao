@@ -355,7 +355,8 @@ class RelevanceExtractor(FieldExtractor):
             from src.classifier.predictor import RelevancePredictor
             predictor = RelevancePredictor.get_instance()
             if predictor.available:
-                pred = predictor.predict(text)
+                title = context.get("title", "")
+                pred = predictor.predict(text, title=title)
                 if pred:
                     ml_label = pred["label"]
                     ml_confidence = pred["confidence"]
