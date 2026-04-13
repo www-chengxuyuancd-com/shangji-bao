@@ -203,6 +203,18 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
         regions = prisma.searchregion.find_many(where={"enabled": True})
         suffixes = prisma.searchsuffix.find_many(where={"enabled": True})
 
+        all_regions = prisma.searchregion.find_many()
+        region_by_id = {r.id: r for r in all_regions}
+        SUB_LEVELS = {"street", "town", "village", "community"}
+
+        def _region_search_name(region):
+            """村/镇/社区/街道级别自动拼上上级区/县名"""
+            if region.level in SUB_LEVELS and region.parentId:
+                parent = region_by_id.get(region.parentId)
+                if parent:
+                    return parent.name + " " + region.name
+            return region.name
+
         query_combos = []
         for source in sources:
             if source.sourceCategory == "search_engine" and source.searchUrlTemplate:
@@ -213,10 +225,10 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
                         for suffix in suffix_list:
                             parts = [kw.keyword]
                             if region:
-                                parts.append(region.name)
+                                parts.append(_region_search_name(region))
                             if suffix:
                                 parts.append(suffix.suffix)
-                            query_str = "+".join(parts)
+                            query_str = " ".join(parts)
                             query_combos.append({
                                 "source": source,
                                 "query": query_str,
