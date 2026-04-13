@@ -76,7 +76,7 @@ def predict_label(title: str, content: str, search_query: str) -> dict | None:
     )
 
     try:
-        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=90)
         resp = client.chat.completions.create(
             model=cfg["model"],
             messages=[

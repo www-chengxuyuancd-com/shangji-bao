@@ -70,13 +70,15 @@
     <div id="test-result" style="margin-top:12px; display:none;"></div>
 </div>
 
+{% raw %}
 <!-- 标注提示词配置 -->
 <div class="admin-card">
     <h3 style="margin:0 0 16px 0; font-size:15px;">标注提示词配置</h3>
     <p style="font-size:12px; color:#999; margin:0 0 12px 0;">
-        提示词中可使用变量：<code>&#123;search_query&#125;</code>（搜索词）、<code>&#123;title&#125;</code>（标题）、<code>&#123;content&#125;</code>（内容摘要）。
-        输出必须为 JSON 格式 <code>&#123;"label": 1, "reason": "理由"&#125;</code>。
+        提示词中可使用变量：<code>{search_query}</code>（搜索词）、<code>{title}</code>（标题）、<code>{content}</code>（内容摘要）。
+        输出必须为 JSON 格式 <code>{"label": 1, "reason": "理由"}</code>。
     </p>
+{% endraw %}
 
     {% if prompts %}
     <div style="margin-bottom:16px;">
@@ -94,7 +96,7 @@
                 <tr>
                     <td>{{ p.name }}</td>
                     <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#666;">
-                        {{ p.prompt[:80] }}...
+                        {{ p.prompt[:80] | e }}...
                     </td>
                     <td>
                         {% if p.isDefault %}
@@ -105,7 +107,7 @@
                     </td>
                     <td>
                         <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px;"
-                                onclick="editPrompt({{ p.id }}, '{{ p.name | e }}', {{ p.prompt | tojson }}, {{ 'true' if p.isDefault else 'false' }})">编辑</button>
+                                onclick="editPrompt({{ p.id }}, {{ p.name | tojson }}, {{ p.prompt | tojson }}, {{ 'true' if p.isDefault else 'false' }})">编辑</button>
                         <form method="post" action="{{ url_for('admin.llm_prompt_delete', pid=p.id) }}" style="display:inline;">
                             <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px; color:#ff4d4f;"
                                     onclick="return confirm('确定删除？')">删除</button>
@@ -139,7 +141,7 @@
                 <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">提示词内容</label>
                 <textarea name="prompt" id="prompt-content" class="form-input" rows="16"
                           style="width:100%; font-family:monospace; font-size:12px; line-height:1.6; resize:vertical;"
-                          required>{{ prompts[0].prompt if prompts else default_prompt }}</textarea>
+                          required></textarea>
             </div>
             <div style="display:flex; gap:8px;">
                 <button type="submit" class="btn btn-primary btn-sm">保存提示词</button>
@@ -150,6 +152,10 @@
 </div>
 
 <script>
+var _defaultPrompt = {{ default_prompt | tojson }};
+var _initPrompt = {{ (prompts[0].prompt if prompts else default_prompt) | tojson }};
+document.getElementById('prompt-content').value = _initPrompt;
+
 function testConnection() {
     var btn = event.target;
     btn.disabled = true;
@@ -201,7 +207,7 @@ function editPrompt(id, name, prompt, isDefault) {
 function resetPromptForm() {
     document.getElementById('prompt-id').value = '';
     document.getElementById('prompt-name').value = '默认标注提示词';
-    document.getElementById('prompt-content').value = {{ default_prompt | tojson }};
+    document.getElementById('prompt-content').value = _defaultPrompt;
     document.getElementById('prompt-is-default').checked = true;
     document.getElementById('prompt-form-title').textContent = '新建提示词';
 }

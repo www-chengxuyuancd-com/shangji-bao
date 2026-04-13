@@ -1052,9 +1052,13 @@ def notify_msg_retry(mid):
 def labeling_list():
     prisma = get_prisma()
     page = request.args.get("page", 1, type=int)
-    per_page = 20
+    per_page = request.args.get("per_page", 20, type=int)
+    per_page = min(max(per_page, 20), 500)
     label_filter = request.args.get("label", "").strip()
     sq = request.args.get("sq", "").strip()
+    title_q = request.args.get("title", "").strip()
+    id_q = request.args.get("id", "").strip()
+    labeled_by = request.args.get("labeled_by", "").strip()
 
     where = {}
     if label_filter == "unlabeled":
@@ -1065,6 +1069,19 @@ def labeling_list():
         where["label"] = 0
     if sq:
         where["searchQuery"] = {"contains": sq}
+    if title_q:
+        where["title"] = {"contains": title_q}
+    if id_q:
+        try:
+            where["id"] = int(id_q)
+        except ValueError:
+            pass
+    if labeled_by == "ai":
+        where["labeledBy"] = "ai"
+    elif labeled_by == "human":
+        where["labeledBy"] = "admin"
+    elif labeled_by == "none":
+        where["labeledBy"] = None
 
     total = prisma.labeledsample.count(where=where)
     items = prisma.labeledsample.find_many(
@@ -1080,6 +1097,7 @@ def labeling_list():
     unlabeled_count = total_all - labeled_count
     relevant_count = prisma.labeledsample.count(where={"label": 1})
     irrelevant_count = prisma.labeledsample.count(where={"label": 0})
+    ai_count = prisma.labeledsample.count(where={"labeledBy": "ai"})
 
     import os
     model_exists = os.path.exists(
@@ -1099,11 +1117,16 @@ def labeling_list():
         total_pages=total_pages,
         label_filter=label_filter,
         sq=sq,
+        title_q=title_q,
+        id_q=id_q,
+        labeled_by=labeled_by,
         total_all=total_all,
         labeled_count=labeled_count,
         unlabeled_count=unlabeled_count,
         relevant_count=relevant_count,
         irrelevant_count=irrelevant_count,
+        ai_count=ai_count,
+        per_page=per_page,
         model_exists=model_exists,
     )
 
