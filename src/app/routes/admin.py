@@ -839,6 +839,7 @@ def notify_config_save():
     filter_region = request.form.get("filter_region") == "on"
     only_relevant = request.form.get("only_relevant") == "on"
     exclude_types = ",".join(request.form.getlist("exclude_types"))
+    title_blacklist = request.form.get("title_blacklist", "").strip()
 
     prisma.notifyconfig.update(
         where={"id": cfg.id},
@@ -848,6 +849,7 @@ def notify_config_save():
             "filterRegion": filter_region,
             "onlyRelevant": only_relevant,
             "excludeTypes": exclude_types or None,
+            "titleBlacklist": title_blacklist or None,
         },
     )
 
@@ -1211,6 +1213,35 @@ def labeling_batch_delete():
         except Exception:
             pass
     return jsonify({"ok": True, "deleted": deleted})
+
+
+@admin_bp.route("/labeling/batch-label", methods=["POST"])
+@login_required
+def labeling_batch_label():
+    from datetime import datetime, timezone
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    label_val = data.get("label")
+    if label_val not in (0, 1):
+        return jsonify({"ok": False, "error": "无效标注值"}), 400
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+    prisma = get_prisma()
+    updated = 0
+    for sid in ids:
+        try:
+            prisma.labeledsample.update(
+                where={"id": int(sid)},
+                data={
+                    "label": label_val,
+                    "labeledBy": "admin",
+                    "labeledAt": datetime.now(timezone.utc),
+                },
+            )
+            updated += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "updated": updated, "label": label_val})
 
 
 @admin_bp.route("/labeling/train", methods=["POST"])

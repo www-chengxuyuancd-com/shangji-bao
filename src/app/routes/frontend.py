@@ -50,10 +50,30 @@ def _build_region_tree(prisma):
     return districts
 
 
+_REGION_SUFFIXES = ("市", "区", "县", "镇", "乡", "街道", "社区", "村")
+
+
+def _strip_region_suffix(name: str) -> str:
+    for suffix in _REGION_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix) + 1:
+            return name[: -len(suffix)]
+    return name
+
+
 def _get_all_region_names(prisma):
-    """获取区/县及以下级别的地区名称（排除省、市，太宽泛），用于地区匹配过滤。"""
+    """获取区/县及以下级别的地区名称（排除省级别，太宽泛），包含去后缀版本用于模糊匹配。"""
     all_regions = prisma.searchregion.find_many()
-    return {r.name for r in all_regions if r.level not in ("province", "city")}
+    names = set()
+    for r in all_regions:
+        if r.level == "province":
+            continue
+        if not r.name or len(r.name) < 2:
+            continue
+        names.add(r.name)
+        stripped = _strip_region_suffix(r.name)
+        if len(stripped) >= 2:
+            names.add(stripped)
+    return names
 
 
 def _filter_by_region(results, region_names):

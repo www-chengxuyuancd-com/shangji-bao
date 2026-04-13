@@ -23,16 +23,42 @@ def _get_or_create_config(prisma):
     return cfg
 
 
+_REGION_SUFFIXES = ("市", "区", "县", "镇", "乡", "街道", "社区", "村")
+
+
+def _strip_region_suffix(name: str) -> str:
+    """去除地区名称的行政后缀，如 龙华区→龙华, 观澜镇→观澜。"""
+    for suffix in _REGION_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix) + 1:
+            return name[: -len(suffix)]
+    return name
+
+
+def _build_region_name_set(regions, exclude_levels=None) -> set[str]:
+    """构建地区名称集合，同时包含原始名和去后缀名。"""
+    names = set()
+    for r in regions:
+        if exclude_levels and r.level in exclude_levels:
+            continue
+        if not r.name or len(r.name) < 2:
+            continue
+        names.add(r.name)
+        stripped = _strip_region_suffix(r.name)
+        if len(stripped) >= 2:
+            names.add(stripped)
+    return names
+
+
 def _get_region_names_for_filter(prisma):
-    """获取区/县及以下级别的地区名称（排除省、市级别，太宽泛）。"""
+    """获取区/县及以下级别的地区名称（排除省级别，太宽泛），包含去后缀版本。"""
     all_regions = prisma.searchregion.find_many()
-    return {r.name for r in all_regions if r.level not in ("province", "city")}
+    return _build_region_name_set(all_regions, exclude_levels={"province"})
 
 
 def _get_all_region_names(prisma):
-    """获取所有地区名称（用于内容匹配显示）。"""
+    """获取所有地区名称（用于内容匹配显示），包含去后缀版本。"""
     all_regions = prisma.searchregion.find_many()
-    return {r.name for r in all_regions if r.name and len(r.name) >= 2}
+    return _build_region_name_set(all_regions)
 
 
 def _match_region(location, region_names):
@@ -79,7 +105,7 @@ def _format_message(item) -> tuple[str, str]:
     return title, "\n".join(parts)
 
 
-def check_item_filter(item, cfg, exclude_types, region_names) -> str | None:
+def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=None) -> str | None:
     """检查一条 ParsedResult 是否应被跳过。返回跳过原因或 None（符合条件）。"""
     now = datetime.now(timezone.utc)
 
@@ -88,6 +114,11 @@ def check_item_filter(item, cfg, exclude_types, region_names) -> str | None:
 
     if exclude_types and item.noticeType and item.noticeType in exclude_types:
         return "type"
+
+    if blacklist_words and item.title:
+        for bw in blacklist_words:
+            if bw in item.title:
+                return "blacklist"
 
     if cfg.filterRegion and not _match_region(item.location, region_names):
         return "region"
@@ -126,6 +157,10 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
         if cfg.excludeTypes:
             exclude_types = {t.strip() for t in cfg.excludeTypes.split(",") if t.strip()}
 
+        blacklist_words = set()
+        if cfg.titleBlacklist:
+            blacklist_words = {w.strip() for w in cfg.titleBlacklist.split(",") if w.strip()}
+
         region_names = _get_region_names_for_filter(prisma)
         all_region_names = _get_all_region_names(prisma)
 
@@ -146,7 +181,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                     continue
 
                 title, content = _format_message(item)
-                skip_reason = check_item_filter(item, cfg, exclude_types, region_names)
+                skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words)
                 matched_region = _find_matched_regions(
                     item.title, item.summary or item.location or "", all_region_names
                 )
@@ -265,6 +300,10 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
         if cfg.excludeTypes:
             exclude_types = {t.strip() for t in cfg.excludeTypes.split(",") if t.strip()}
 
+        blacklist_words = set()
+        if cfg.titleBlacklist:
+            blacklist_words = {w.strip() for w in cfg.titleBlacklist.split(",") if w.strip()}
+
         region_names = _get_region_names_for_filter(prisma)
         all_region_names = _get_all_region_names(prisma)
 
@@ -289,7 +328,7 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
             if not item:
                 continue
 
-            skip_reason = check_item_filter(item, cfg, exclude_types, region_names)
+            skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words)
             matched_region = _find_matched_regions(
                 item.title, item.summary or item.location or "", all_region_names
             )

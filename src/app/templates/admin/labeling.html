@@ -49,9 +49,11 @@
 </div>
 
 <div class="admin-card" style="overflow-x:auto;">
-    <div id="batch-bar" style="display:none; margin-bottom:10px; padding:8px 12px; background:#fff7e6; border:1px solid #ffe58f; border-radius:4px; font-size:13px;">
+    <div id="batch-bar" style="display:none; margin-bottom:10px; padding:8px 12px; background:#fff7e6; border:1px solid #ffe58f; border-radius:4px; font-size:13px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         已选 <strong id="sel-count">0</strong> 条
-        <button type="button" class="btn btn-danger btn-sm" style="margin-left:10px; font-size:12px;" onclick="batchDelete()">批量删除</button>
+        <button type="button" class="btn btn-primary btn-sm" style="font-size:12px;" onclick="batchLabel(1)">批量标为相关</button>
+        <button type="button" class="btn btn-danger btn-sm" style="font-size:12px;" onclick="batchLabel(0)">批量标为不相关</button>
+        <button type="button" class="btn btn-danger btn-sm" style="font-size:12px;" onclick="batchDelete()">批量删除</button>
         <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消选择</button>
     </div>
     <table class="admin-table" style="table-layout:fixed; width:100%;">
@@ -212,6 +214,46 @@ function clearSelection() {
     var checks = document.querySelectorAll('.row-check');
     for(var i=0;i<checks.length;i++) checks[i].checked = false;
     updateBatch();
+}
+
+function batchLabel(label) {
+    var checks = document.querySelectorAll('.row-check:checked');
+    if(checks.length === 0) return;
+    var labelText = label === 1 ? '相关' : '不相关';
+    if(!confirm('将选中的 ' + checks.length + ' 条记录标为「' + labelText + '」？')) return;
+    var ids = [];
+    for(var i=0;i<checks.length;i++) ids.push(parseInt(checks[i].value));
+    fetch('{{ url_for("admin.labeling_batch_label") }}', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body: JSON.stringify({ids: ids, label: label})
+    })
+    .then(function(r){return r.json();})
+    .then(function(d){
+        if(d.ok){
+            for(var i=0;i<ids.length;i++){
+                var labelCell = document.getElementById('label-'+ids[i]);
+                var btnRel = document.getElementById('btn-rel-'+ids[i]);
+                var btnIrr = document.getElementById('btn-irr-'+ids[i]);
+                if(labelCell){
+                    if(d.label === 1){
+                        labelCell.innerHTML = '<span style="color:#52c41a; font-size:12px;">✔ 相关</span>';
+                        if(btnRel) btnRel.className = 'btn btn-sm btn-primary';
+                        if(btnIrr) btnIrr.className = 'btn btn-sm btn-ghost';
+                    } else {
+                        labelCell.innerHTML = '<span style="color:#ff4d4f; font-size:12px;">✘ 不相关</span>';
+                        if(btnRel) btnRel.className = 'btn btn-sm btn-ghost';
+                        if(btnIrr) btnIrr.className = 'btn btn-sm btn-danger';
+                    }
+                }
+            }
+            showToast('已标注 '+d.updated+' 条为「'+labelText+'」','success');
+            clearSelection();
+        } else {
+            showToast(d.error||'标注失败','error');
+        }
+    })
+    .catch(function(){showToast('请求失败','error');});
 }
 
 function batchDelete() {

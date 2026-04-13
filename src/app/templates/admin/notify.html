@@ -41,6 +41,11 @@
                         {% endfor %}
                     </div>
                 </div>
+                <div>
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:4px;">标题黑名单（逗号分隔，标题含任一关键词则不发送）</label>
+                    <input type="text" name="title_blacklist" class="form-input" style="width:300px; font-size:12px;"
+                           value="{{ cfg.titleBlacklist or '' }}" placeholder="如：招聘,招水电工,培训">
+                </div>
                 <div style="padding-top:16px;">
                     <button type="submit" class="btn btn-primary btn-sm">保存配置</button>
                 </div>
@@ -337,6 +342,7 @@
                     {% if m.skipReason == 'manual' %}<span style="color:#722ed1;">手动跳过</span>
                     {% elif m.skipReason == 'region' %}<span style="color:#faad14;">地区不匹配</span>
                     {% elif m.skipReason == 'type' %}<span style="color:#faad14;">类型排除</span>
+                    {% elif m.skipReason == 'blacklist' %}<span style="color:#ff4d4f;">标题黑名单</span>
                     {% elif m.skipReason == 'not_relevant' %}<span style="color:#ccc;">不相关</span>
                     {% elif m.skipReason == 'date' %}<span style="color:#ccc;">日期超范围</span>
                     {% elif m.skipReason %}<span>{{ m.skipReason }}</span>

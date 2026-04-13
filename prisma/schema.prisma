@@ -233,9 +233,10 @@ model NotifyConfig {
   filterFuture  Boolean  @default(true) @map("filter_future")
   filterRegion  Boolean  @default(true) @map("filter_region")
   onlyRelevant  Boolean  @default(true) @map("only_relevant")
-  excludeTypes  String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  excludeTypes    String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
+  titleBlacklist  String?  @map("title_blacklist") @db.VarChar(1000) // 逗号分隔: 招聘,招水电工
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("notify_config")
 }
