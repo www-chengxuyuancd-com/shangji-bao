@@ -830,7 +830,11 @@ def notify_list():
 def notify_config_save():
     prisma = get_prisma()
     cfg = _get_notify_config(prisma)
-    filter_months = int(request.form.get("filter_months", "3") or "3")
+    filter_months = int(request.form.get("filter_months", "3") or "0")
+    filter_extra_days = int(request.form.get("filter_extra_days", "0") or "0")
+    filter_days = filter_months * 30 + filter_extra_days
+    if filter_days < 1:
+        filter_days = 90
     filter_future = request.form.get("filter_future") == "on"
     filter_region = request.form.get("filter_region") == "on"
     only_relevant = request.form.get("only_relevant") == "on"
@@ -839,14 +843,25 @@ def notify_config_save():
     prisma.notifyconfig.update(
         where={"id": cfg.id},
         data={
-            "filterMonths": filter_months,
+            "filterDays": filter_days,
             "filterFuture": filter_future,
             "filterRegion": filter_region,
             "onlyRelevant": only_relevant,
             "excludeTypes": exclude_types or None,
         },
     )
-    flash("通知过滤配置已保存", "success")
+
+    from src.notify.engine import reevaluate_messages
+    result = reevaluate_messages(prisma)
+    msg = "通知过滤配置已保存"
+    if result["to_skip"] or result["to_restore"]:
+        msg += f"，已重新评估 {result['evaluated']} 条消息"
+        if result["to_skip"]:
+            msg += f"（{result['to_skip']} 条新跳过"
+        if result["to_restore"]:
+            msg += f"{'，' if result['to_skip'] else '（'}{result['to_restore']} 条恢复待发送"
+        msg += "）"
+    flash(msg, "success")
     return redirect(url_for("admin.notify_list"))
 
 

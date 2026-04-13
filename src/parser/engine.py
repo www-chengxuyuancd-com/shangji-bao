@@ -214,6 +214,13 @@ def _run_parse_job(job_id: int):
             },
         )
 
+        try:
+            from src.notify.engine import prepare_notifications
+            prep = prepare_notifications(prisma)
+            logger.info("Auto-prepare after parse: prepared=%d skipped=%d", prep["prepared"], prep["skipped"])
+        except Exception as pe:
+            logger.warning("Auto-prepare notifications failed: %s", pe)
+
     except Exception as e:
         logger.error("Parse job %d failed: %s", job_id, e)
         prisma.crawljob.update(
@@ -357,6 +364,13 @@ def _run_relevance_rejudge(job_id: int):
                 "errorLog": "\n".join(error_logs[-50:]) if error_logs else None,
             },
         )
+
+        try:
+            from src.notify.engine import prepare_notifications
+            prep = prepare_notifications(prisma)
+            logger.info("Auto-prepare after rejudge: prepared=%d skipped=%d", prep["prepared"], prep["skipped"])
+        except Exception as pe:
+            logger.warning("Auto-prepare notifications after rejudge failed: %s", pe)
 
     except Exception as e:
         logger.error("Relevance rejudge job %d failed: %s", job_id, e)

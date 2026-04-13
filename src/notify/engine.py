@@ -29,11 +29,29 @@ def _get_region_names_for_filter(prisma):
     return {r.name for r in all_regions if r.level not in ("province", "city")}
 
 
+def _get_all_region_names(prisma):
+    """获取所有地区名称（用于内容匹配显示）。"""
+    all_regions = prisma.searchregion.find_many()
+    return {r.name for r in all_regions if r.name and len(r.name) >= 2}
+
+
 def _match_region(location, region_names):
     """检查 location 是否匹配后台配置的任意地区（区/县及以下）。"""
     if not location:
         return True
     return any(name in location for name in region_names)
+
+
+def _find_matched_regions(title: str, content: str, all_region_names: set) -> str:
+    """在标题和正文中查找匹配到的配置地区，返回逗号分隔的地区名。"""
+    text = f"{title or ''} {content or ''}"
+    matched = [name for name in all_region_names if name in text]
+    matched.sort(key=lambda n: text.index(n))
+    seen = []
+    for m in matched:
+        if m not in seen:
+            seen.append(m)
+    return ",".join(seen[:5]) if seen else ""
 
 
 def _format_message(item) -> tuple[str, str]:
@@ -74,9 +92,9 @@ def check_item_filter(item, cfg, exclude_types, region_names) -> str | None:
     if cfg.filterRegion and not _match_region(item.location, region_names):
         return "region"
 
-    months_ago = now - timedelta(days=cfg.filterMonths * 30)
+    cutoff = now - timedelta(days=cfg.filterDays)
     date_ok = False
-    if item.publishDate and item.publishDate >= months_ago:
+    if item.publishDate and item.publishDate >= cutoff:
         date_ok = True
     if cfg.filterFuture and item.bidEndTime and item.bidEndTime >= now:
         date_ok = True
@@ -109,10 +127,11 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
             exclude_types = {t.strip() for t in cfg.excludeTypes.split(",") if t.strip()}
 
         region_names = _get_region_names_for_filter(prisma)
+        all_region_names = _get_all_region_names(prisma)
 
         all_items = prisma.parsedresult.find_many(
             order={"publishDate": "desc"},
-            take=1000,
+            take=2000,
         )
 
         stats = {"prepared": 0, "skipped": 0, "existing": 0, "errors": []}
@@ -128,6 +147,9 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
 
                 title, content = _format_message(item)
                 skip_reason = check_item_filter(item, cfg, exclude_types, region_names)
+                matched_region = _find_matched_regions(
+                    item.title, item.summary or item.location or "", all_region_names
+                )
 
                 prisma.notifymessage.create(data={
                     "channelId": ch.id,
@@ -140,6 +162,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                     "publishDate": item.publishDate,
                     "content": f"{title}\n\n{content}",
                     "skipReason": skip_reason,
+                    "matchedRegion": matched_region or None,
                 })
 
                 if skip_reason:
@@ -219,6 +242,86 @@ def send_notifications(prisma: Prisma | None = None) -> dict:
                 stats["errors"].append(f"[{ch.name}] {(msg.url or '')[:50]}: {error_msg}")
 
         return stats
+    finally:
+        if own_prisma:
+            prisma.disconnect()
+
+
+def reevaluate_messages(prisma: Prisma | None = None) -> dict:
+    """
+    根据最新 NotifyConfig 重新评估所有非手动、非已发送消息的状态。
+    - pending 消息如果不再符合条件 → skipped
+    - skipped（非手动）消息如果现在符合条件 → pending
+    同时更新 matchedRegion。
+    """
+    own_prisma = prisma is None
+    if own_prisma:
+        prisma = Prisma()
+        prisma.connect()
+
+    try:
+        cfg = _get_or_create_config(prisma)
+        exclude_types = set()
+        if cfg.excludeTypes:
+            exclude_types = {t.strip() for t in cfg.excludeTypes.split(",") if t.strip()}
+
+        region_names = _get_region_names_for_filter(prisma)
+        all_region_names = _get_all_region_names(prisma)
+
+        msgs = prisma.notifymessage.find_many(
+            where={
+                "status": {"in": ["pending", "skipped"]},
+            },
+        )
+
+        parsed_cache: dict = {}
+        to_skip = 0
+        to_restore = 0
+
+        for msg in msgs:
+            if msg.status == "skipped" and msg.skipReason == "manual":
+                continue
+
+            pid = msg.parsedId
+            if pid not in parsed_cache:
+                parsed_cache[pid] = prisma.parsedresult.find_unique(where={"id": pid})
+            item = parsed_cache[pid]
+            if not item:
+                continue
+
+            skip_reason = check_item_filter(item, cfg, exclude_types, region_names)
+            matched_region = _find_matched_regions(
+                item.title, item.summary or item.location or "", all_region_names
+            )
+
+            if msg.status == "pending" and skip_reason:
+                prisma.notifymessage.update(
+                    where={"id": msg.id},
+                    data={
+                        "status": "skipped",
+                        "skipReason": skip_reason,
+                        "matchedRegion": matched_region or None,
+                    },
+                )
+                to_skip += 1
+            elif msg.status == "skipped" and not skip_reason:
+                prisma.notifymessage.update(
+                    where={"id": msg.id},
+                    data={
+                        "status": "pending",
+                        "skipReason": None,
+                        "matchedRegion": matched_region or None,
+                    },
+                )
+                to_restore += 1
+            else:
+                if (matched_region or "") != (msg.matchedRegion or ""):
+                    prisma.notifymessage.update(
+                        where={"id": msg.id},
+                        data={"matchedRegion": matched_region or None},
+                    )
+
+        return {"to_skip": to_skip, "to_restore": to_restore, "evaluated": len(msgs)}
     finally:
         if own_prisma:
             prisma.disconnect()

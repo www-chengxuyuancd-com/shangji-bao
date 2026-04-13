@@ -229,7 +229,7 @@ model LabeledSample {
 /// 通知过滤配置（全局，单行）
 model NotifyConfig {
   id            BigInt   @id @default(autoincrement())
-  filterMonths  Int      @default(3) @map("filter_months")
+  filterDays    Int      @default(90) @map("filter_days")
   filterFuture  Boolean  @default(true) @map("filter_future")
   filterRegion  Boolean  @default(true) @map("filter_region")
   onlyRelevant  Boolean  @default(true) @map("only_relevant")
@@ -272,7 +272,8 @@ model NotifyMessage {
   publishDate   DateTime? @map("publish_date")
   content       String?  @db.Text
   errorMsg      String?  @map("error_msg") @db.Text
-  skipReason    String?  @map("skip_reason") @db.VarChar(100) // manual, region, type, duplicate
+  skipReason    String?  @map("skip_reason") @db.VarChar(100) // manual, region, type, duplicate, not_relevant, date
+  matchedRegion String?  @map("matched_region") @db.VarChar(200)
   sentAt        DateTime? @map("sent_at")
   createdAt     DateTime @default(now()) @map("created_at")
 

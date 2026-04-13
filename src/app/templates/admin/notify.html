@@ -10,8 +10,14 @@
         <form method="post" action="{{ url_for('admin.notify_config_save') }}">
             <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start;">
                 <div>
-                    <label style="display:block; font-size:12px; color:#666; margin-bottom:4px;">发布日期范围（月）</label>
-                    <input type="number" name="filter_months" class="form-input" style="width:70px;" value="{{ cfg.filterMonths }}" min="1" max="24">
+                    <label style="display:block; font-size:12px; color:#666; margin-bottom:4px;">发布日期范围</label>
+                    <div style="display:flex; gap:4px; align-items:center;">
+                        <input type="number" name="filter_months" class="form-input" style="width:55px;" value="{{ (cfg.filterDays // 30) }}" min="0" max="24">
+                        <span style="font-size:12px; color:#666;">月</span>
+                        <input type="number" name="filter_extra_days" class="form-input" style="width:55px;" value="{{ (cfg.filterDays % 30) }}" min="0" max="29">
+                        <span style="font-size:12px; color:#666;">天</span>
+                        <span style="font-size:11px; color:#999; margin-left:4px;">= {{ cfg.filterDays }}天</span>
+                    </div>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:6px; padding-top:18px;">
                     <label style="font-size:13px; color:#666;">
@@ -291,6 +297,7 @@
                 <th style="width:70px">类型</th>
                 <th style="width:85px">发布日期</th>
                 <th style="width:85px">跳过原因</th>
+                <th style="width:90px">匹配地区</th>
                 <th style="width:70px">渠道</th>
                 <th style="width:85px">发送时间</th>
                 <th style="width:120px">操作</th>
@@ -335,6 +342,13 @@
                     {% elif m.skipReason %}<span>{{ m.skipReason }}</span>
                     {% else %}-{% endif %}
                 </td>
+                <td style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ m.matchedRegion or '' }}">
+                    {% if m.matchedRegion %}
+                    {% for rn in m.matchedRegion.split(',') %}
+                    <span class="meta-tag" style="background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;font-size:10px;padding:1px 3px;">{{ rn }}</span>
+                    {% endfor %}
+                    {% else %}-{% endif %}
+                </td>
                 <td style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ m.channel.name if m.channel else '' }}">{{ m.channel.name if m.channel else '-' }}</td>
                 <td style="font-size:11px; white-space:nowrap; color:#666;">{{ m.sentAt|cst_time('%m-%d %H:%M') if m.sentAt else '-' }}</td>
                 <td style="white-space:nowrap;">
@@ -364,7 +378,7 @@
             {% endfor %}
             {% if not messages %}
             <tr>
-                <td colspan="10" style="text-align:center; padding:40px; color:#999;">暂无消息记录，请先点击「预生成消息」</td>
+                <td colspan="11" style="text-align:center; padding:40px; color:#999;">暂无消息记录，请先点击「预生成消息」</td>
             </tr>
             {% endif %}
         </tbody>
