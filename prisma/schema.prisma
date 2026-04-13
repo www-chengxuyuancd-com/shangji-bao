@@ -288,6 +288,34 @@ model NotifyMessage {
   @@map("notify_messages")
 }
 
+/// 大模型配置
+model LlmConfig {
+  id            BigInt   @id @default(autoincrement())
+  provider      String   @default("deepseek") @db.VarChar(50) // deepseek, openai, etc.
+  apiKey        String   @map("api_key") @db.VarChar(500)
+  baseUrl       String   @map("base_url") @db.VarChar(500) // API 端点
+  model         String   @default("deepseek-chat") @db.VarChar(100)
+  temperature   Float    @default(0.1)
+  maxTokens     Int      @default(200) @map("max_tokens")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("llm_config")
+}
+
+/// 标注提示词配置
+model LabelingPrompt {
+  id          BigInt   @id @default(autoincrement())
+  name        String   @db.VarChar(100)
+  prompt      String   @db.Text
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("labeling_prompts")
+}
+
 /// 已访问的URL（去重用）
 model VisitedUrl {
   id          BigInt   @id @default(autoincrement())

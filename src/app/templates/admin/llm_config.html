@@ -1,0 +1,209 @@
+{% extends "admin/base_admin.html" %}
+
+{% block admin_content %}
+<h1>大模型配置</h1>
+
+<!-- LLM 连接配置 -->
+<div class="admin-card" style="margin-bottom:20px;">
+    <h3 style="margin:0 0 16px 0; font-size:15px;">API 连接配置</h3>
+    <form method="post" action="{{ url_for('admin.llm_config_save') }}">
+        {% if configs %}
+        <input type="hidden" name="config_id" value="{{ configs[0].id }}">
+        {% endif %}
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+            <div>
+                <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">服务商</label>
+                <select name="provider" class="form-input" style="width:100%;">
+                    <option value="deepseek" {{ 'selected' if configs and configs[0].provider == 'deepseek' }}>DeepSeek</option>
+                    <option value="openai" {{ 'selected' if configs and configs[0].provider == 'openai' }}>OpenAI</option>
+                    <option value="qwen" {{ 'selected' if configs and configs[0].provider == 'qwen' }}>通义千问</option>
+                    <option value="other" {{ 'selected' if configs and configs[0].provider == 'other' }}>其他 (OpenAI 兼容)</option>
+                </select>
+            </div>
+            <div>
+                <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">模型名称</label>
+                <input type="text" name="model" class="form-input" style="width:100%;"
+                       value="{{ configs[0].model if configs else 'deepseek-chat' }}"
+                       placeholder="deepseek-chat">
+            </div>
+        </div>
+        <div style="margin-bottom:12px;">
+            <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">API Key</label>
+            <input type="password" name="api_key" class="form-input" style="width:100%;"
+                   value="{{ configs[0].apiKey if configs else '' }}"
+                   placeholder="sk-..." required>
+        </div>
+        <div style="margin-bottom:12px;">
+            <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">Base URL</label>
+            <input type="text" name="base_url" class="form-input" style="width:100%;"
+                   value="{{ configs[0].baseUrl if configs else 'https://api.deepseek.com' }}"
+                   placeholder="https://api.deepseek.com" required>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
+            <div>
+                <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">Temperature</label>
+                <input type="number" name="temperature" class="form-input" style="width:100%;" step="0.05" min="0" max="2"
+                       value="{{ configs[0].temperature if configs else '0.1' }}">
+            </div>
+            <div>
+                <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">Max Tokens</label>
+                <input type="number" name="max_tokens" class="form-input" style="width:100%;" min="50" max="4096"
+                       value="{{ configs[0].maxTokens if configs else '200' }}">
+            </div>
+            <div style="display:flex; align-items:end; padding-bottom:4px;">
+                <label style="font-size:13px; cursor:pointer;">
+                    <input type="checkbox" name="enabled" {{ 'checked' if not configs or configs[0].enabled }}>
+                    启用
+                </label>
+            </div>
+        </div>
+        <div style="display:flex; gap:8px;">
+            <button type="submit" class="btn btn-primary btn-sm">{{ '更新配置' if configs else '保存配置' }}</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="testConnection()">测试连接</button>
+            {% if configs %}
+            <form method="post" action="{{ url_for('admin.llm_config_delete', cid=configs[0].id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定删除此配置？')">删除</button>
+            </form>
+            {% endif %}
+        </div>
+    </form>
+    <div id="test-result" style="margin-top:12px; display:none;"></div>
+</div>
+
+<!-- 标注提示词配置 -->
+<div class="admin-card">
+    <h3 style="margin:0 0 16px 0; font-size:15px;">标注提示词配置</h3>
+    <p style="font-size:12px; color:#999; margin:0 0 12px 0;">
+        提示词中可使用变量：<code>{search_query}</code>（搜索词）、<code>{title}</code>（标题）、<code>{content}</code>（内容摘要）。
+        输出必须为 JSON 格式 <code>{{"label": 1, "reason": "理由"}}</code>。
+    </p>
+
+    {% if prompts %}
+    <div style="margin-bottom:16px;">
+        <table class="admin-table" style="table-layout:fixed; width:100%;">
+            <thead>
+                <tr>
+                    <th style="width:120px">名称</th>
+                    <th>提示词预览</th>
+                    <th style="width:60px">默认</th>
+                    <th style="width:120px">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in prompts %}
+                <tr>
+                    <td>{{ p.name }}</td>
+                    <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#666;">
+                        {{ p.prompt[:80] }}...
+                    </td>
+                    <td>
+                        {% if p.isDefault %}
+                        <span style="color:#52c41a; font-size:12px;">✔ 默认</span>
+                        {% else %}
+                        <span style="color:#ccc; font-size:12px;">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px;"
+                                onclick="editPrompt({{ p.id }}, '{{ p.name | e }}', {{ p.prompt | tojson }}, {{ 'true' if p.isDefault else 'false' }})">编辑</button>
+                        <form method="post" action="{{ url_for('admin.llm_prompt_delete', pid=p.id) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px; color:#ff4d4f;"
+                                    onclick="return confirm('确定删除？')">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <div id="prompt-form" style="border:1px solid #e8e8e8; border-radius:6px; padding:16px; background:#fafafa;">
+        <h4 id="prompt-form-title" style="margin:0 0 12px 0; font-size:14px;">{{ '编辑提示词' if prompts else '新建提示词' }}</h4>
+        <form method="post" action="{{ url_for('admin.llm_prompt_save') }}">
+            <input type="hidden" name="prompt_id" id="prompt-id" value="">
+            <div style="display:grid; grid-template-columns:1fr auto; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">名称</label>
+                    <input type="text" name="name" id="prompt-name" class="form-input" style="width:100%;"
+                           value="默认标注提示词" placeholder="如：弱电招标标注" required>
+                </div>
+                <div style="display:flex; align-items:end; padding-bottom:4px;">
+                    <label style="font-size:13px; cursor:pointer;">
+                        <input type="checkbox" name="is_default" id="prompt-is-default" checked>
+                        设为默认
+                    </label>
+                </div>
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">提示词内容</label>
+                <textarea name="prompt" id="prompt-content" class="form-input" rows="16"
+                          style="width:100%; font-family:monospace; font-size:12px; line-height:1.6; resize:vertical;"
+                          required>{{ prompts[0].prompt if prompts else default_prompt }}</textarea>
+            </div>
+            <div style="display:flex; gap:8px;">
+                <button type="submit" class="btn btn-primary btn-sm">保存提示词</button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="resetPromptForm()">重置</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function testConnection() {
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '测试中...';
+    var resultDiv = document.getElementById('test-result');
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = '<span style="color:#1890ff; font-size:13px;">正在调用大模型，请稍候...</span>';
+
+    fetch('{{ url_for("admin.llm_config_test") }}', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            var r = data.result;
+            var labelText = r.label === 1 ? '相关' : '不相关';
+            resultDiv.innerHTML = '<div style="padding:10px; background:#f6ffed; border:1px solid #b7eb8f; border-radius:4px; font-size:13px;">'
+                + '<strong style="color:#52c41a;">✔ 连接成功</strong><br>'
+                + '测试结果：<strong>' + labelText + '</strong><br>'
+                + '理由：' + (r.reason || '-')
+                + '</div>';
+        } else {
+            resultDiv.innerHTML = '<div style="padding:10px; background:#fff2f0; border:1px solid #ffccc7; border-radius:4px; font-size:13px;">'
+                + '<strong style="color:#ff4d4f;">✘ 连接失败</strong>：' + (data.error || '未知错误')
+                + '</div>';
+        }
+    })
+    .catch(function() {
+        resultDiv.innerHTML = '<div style="padding:10px; background:#fff2f0; border:1px solid #ffccc7; border-radius:4px; font-size:13px;">'
+            + '<strong style="color:#ff4d4f;">✘ 网络错误</strong>'
+            + '</div>';
+    })
+    .finally(function() {
+        btn.disabled = false;
+        btn.textContent = '测试连接';
+    });
+}
+
+function editPrompt(id, name, prompt, isDefault) {
+    document.getElementById('prompt-id').value = id;
+    document.getElementById('prompt-name').value = name;
+    document.getElementById('prompt-content').value = prompt;
+    document.getElementById('prompt-is-default').checked = isDefault;
+    document.getElementById('prompt-form-title').textContent = '编辑提示词';
+    document.getElementById('prompt-form').scrollIntoView({behavior: 'smooth'});
+}
+
+function resetPromptForm() {
+    document.getElementById('prompt-id').value = '';
+    document.getElementById('prompt-name').value = '默认标注提示词';
+    document.getElementById('prompt-content').value = {{ default_prompt | tojson }};
+    document.getElementById('prompt-is-default').checked = true;
+    document.getElementById('prompt-form-title').textContent = '新建提示词';
+}
+</script>
+{% endblock %}

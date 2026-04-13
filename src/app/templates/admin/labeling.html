@@ -53,6 +53,7 @@
         已选 <strong id="sel-count">0</strong> 条
         <button type="button" class="btn btn-primary btn-sm" style="font-size:12px;" onclick="batchLabel(1)">批量标为相关</button>
         <button type="button" class="btn btn-danger btn-sm" style="font-size:12px;" onclick="batchLabel(0)">批量标为不相关</button>
+        <button type="button" class="btn btn-sm" style="font-size:12px; background:#722ed1; color:#fff; border-color:#722ed1;" onclick="aiPredict()">🤖 AI 预标注</button>
         <button type="button" class="btn btn-danger btn-sm" style="font-size:12px;" onclick="batchDelete()">批量删除</button>
         <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消选择</button>
     </div>
@@ -254,6 +255,55 @@ function batchLabel(label) {
         }
     })
     .catch(function(){showToast('请求失败','error');});
+}
+
+function aiPredict() {
+    var checks = document.querySelectorAll('.row-check:checked');
+    if(checks.length === 0) return;
+    if(!confirm('使用 AI 对选中的 ' + checks.length + ' 条记录进行预标注？\n（需要已配置大模型，逐条调用可能需要一些时间）')) return;
+    var ids = [];
+    for(var i=0;i<checks.length;i++) ids.push(parseInt(checks[i].value));
+
+    var bar = document.getElementById('batch-bar');
+    bar.innerHTML = '<span style="color:#722ed1;">🤖 AI 正在标注中，请稍候... (0/' + ids.length + ')</span>';
+
+    fetch('{{ url_for("admin.labeling_ai_predict") }}', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body: JSON.stringify({ids: ids})
+    })
+    .then(function(r){return r.json();})
+    .then(function(d){
+        if(d.ok){
+            var results = d.results || [];
+            for(var i=0;i<results.length;i++){
+                var r = results[i];
+                var labelCell = document.getElementById('label-'+r.id);
+                var btnRel = document.getElementById('btn-rel-'+r.id);
+                var btnIrr = document.getElementById('btn-irr-'+r.id);
+                if(labelCell){
+                    if(r.label === 1){
+                        labelCell.innerHTML = '<span style="color:#52c41a; font-size:12px;">✔ 相关</span>';
+                        if(btnRel) btnRel.className = 'btn btn-sm btn-primary';
+                        if(btnIrr) btnIrr.className = 'btn btn-sm btn-ghost';
+                    } else {
+                        labelCell.innerHTML = '<span style="color:#ff4d4f; font-size:12px;">✘ 不相关</span>';
+                        if(btnRel) btnRel.className = 'btn btn-sm btn-ghost';
+                        if(btnIrr) btnIrr.className = 'btn btn-sm btn-danger';
+                    }
+                }
+            }
+            showToast('AI 预标注完成：成功 '+d.predicted+' 条，失败 '+d.failed+' 条','success');
+            clearSelection();
+        } else {
+            showToast(d.error||'AI 标注失败','error');
+            clearSelection();
+        }
+    })
+    .catch(function(){
+        showToast('请求失败，请检查大模型配置','error');
+        clearSelection();
+    });
 }
 
 function batchDelete() {

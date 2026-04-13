@@ -5,7 +5,7 @@
     <aside class="admin-sidebar">
         <div class="sidebar-logo">商机宝 管理</div>
         {% set g_pipeline = 'job' in request.endpoint or 'result' in request.endpoint or 'parsed' in request.endpoint %}
-        {% set g_config = 'source' in request.endpoint or 'schedule' in request.endpoint or 'keyword' in request.endpoint or 'region' in request.endpoint or 'suffix' in request.endpoint %}
+        {% set g_config = 'source' in request.endpoint or 'schedule' in request.endpoint or 'keyword' in request.endpoint or 'region' in request.endpoint or 'suffix' in request.endpoint or 'llm' in request.endpoint %}
         {% set g_ml = 'labeling' in request.endpoint %}
         <ul class="sidebar-menu">
             <li><a href="{{ url_for('admin.dashboard') }}" class="{{ 'active' if request.endpoint == 'admin.dashboard' }}">仪表盘</a></li>
@@ -31,6 +31,7 @@
                     <li><a href="{{ url_for('admin.keywords') }}" class="{{ 'active' if 'keyword' in request.endpoint }}">关键词管理</a></li>
                     <li><a href="{{ url_for('admin.regions') }}" class="{{ 'active' if 'region' in request.endpoint }}">地区管理</a></li>
                     <li><a href="{{ url_for('admin.suffixes') }}" class="{{ 'active' if 'suffix' in request.endpoint }}">后缀管理</a></li>
+                    <li><a href="{{ url_for('admin.llm_config') }}" class="{{ 'active' if 'llm' in request.endpoint }}">大模型配置</a></li>
                 </ul>
             </li>
 

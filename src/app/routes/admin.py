@@ -1261,6 +1261,179 @@ def labeling_train():
     return redirect(url_for("admin.labeling_list"))
 
 
+@admin_bp.route("/labeling/ai-predict", methods=["POST"])
+@login_required
+def labeling_ai_predict():
+    """AI 预标注：对选中的未标注样本调用大模型预测"""
+    from datetime import datetime, timezone
+    from src.llm.client import predict_label
+
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任何记录"}), 400
+
+    prisma = get_prisma()
+    predicted = 0
+    failed = 0
+    results = []
+
+    for sid in ids:
+        try:
+            sample = prisma.labeledsample.find_unique(where={"id": int(sid)})
+            if not sample:
+                failed += 1
+                continue
+
+            result = predict_label(
+                title=sample.title or "",
+                content=sample.content or "",
+                search_query=sample.searchQuery or "",
+            )
+            if result and result["label"] in (0, 1):
+                prisma.labeledsample.update(
+                    where={"id": int(sid)},
+                    data={
+                        "label": result["label"],
+                        "labeledBy": "ai",
+                        "labeledAt": datetime.now(timezone.utc),
+                    },
+                )
+                predicted += 1
+                results.append({"id": int(sid), "label": result["label"], "reason": result.get("reason", "")})
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    return jsonify({"ok": True, "predicted": predicted, "failed": failed, "results": results})
+
+
+# ==================== 大模型配置 ====================
+
+@admin_bp.route("/llm-config")
+@login_required
+def llm_config():
+    prisma = get_prisma()
+    configs = prisma.llmconfig.find_many(order={"createdAt": "desc"})
+    prompts = prisma.labelingprompt.find_many(order={"createdAt": "desc"})
+
+    from src.llm.client import DEFAULT_LABELING_PROMPT
+    return render_template(
+        "admin/llm_config.html",
+        configs=configs,
+        prompts=prompts,
+        default_prompt=DEFAULT_LABELING_PROMPT,
+    )
+
+
+@admin_bp.route("/llm-config/save", methods=["POST"])
+@login_required
+def llm_config_save():
+    prisma = get_prisma()
+    config_id = request.form.get("config_id", "").strip()
+    provider = request.form.get("provider", "deepseek").strip()
+    api_key = request.form.get("api_key", "").strip()
+    base_url = request.form.get("base_url", "").strip()
+    model = request.form.get("model", "deepseek-chat").strip()
+    temperature = float(request.form.get("temperature", "0.1"))
+    max_tokens = int(request.form.get("max_tokens", "200"))
+    enabled = request.form.get("enabled") == "on"
+
+    if not api_key or not base_url:
+        flash("API Key 和 Base URL 不能为空", "error")
+        return redirect(url_for("admin.llm_config"))
+
+    data = {
+        "provider": provider,
+        "apiKey": api_key,
+        "baseUrl": base_url,
+        "model": model,
+        "temperature": temperature,
+        "maxTokens": max_tokens,
+        "enabled": enabled,
+    }
+
+    if config_id:
+        prisma.llmconfig.update(where={"id": int(config_id)}, data=data)
+        flash("配置已更新", "success")
+    else:
+        prisma.llmconfig.create(data=data)
+        flash("配置已创建", "success")
+
+    return redirect(url_for("admin.llm_config"))
+
+
+@admin_bp.route("/llm-config/<int:cid>/delete", methods=["POST"])
+@login_required
+def llm_config_delete(cid):
+    prisma = get_prisma()
+    try:
+        prisma.llmconfig.delete(where={"id": cid})
+        flash("配置已删除", "success")
+    except Exception:
+        flash("删除失败", "error")
+    return redirect(url_for("admin.llm_config"))
+
+
+@admin_bp.route("/llm-config/prompt/save", methods=["POST"])
+@login_required
+def llm_prompt_save():
+    prisma = get_prisma()
+    prompt_id = request.form.get("prompt_id", "").strip()
+    name = request.form.get("name", "").strip()
+    prompt = request.form.get("prompt", "").strip()
+    is_default = request.form.get("is_default") == "on"
+
+    if not name or not prompt:
+        flash("名称和提示词不能为空", "error")
+        return redirect(url_for("admin.llm_config"))
+
+    if is_default:
+        prisma.labelingprompt.update_many(
+            where={"isDefault": True},
+            data={"isDefault": False},
+        )
+
+    data = {"name": name, "prompt": prompt, "isDefault": is_default}
+
+    if prompt_id:
+        prisma.labelingprompt.update(where={"id": int(prompt_id)}, data=data)
+        flash("提示词已更新", "success")
+    else:
+        prisma.labelingprompt.create(data=data)
+        flash("提示词已创建", "success")
+
+    return redirect(url_for("admin.llm_config"))
+
+
+@admin_bp.route("/llm-config/prompt/<int:pid>/delete", methods=["POST"])
+@login_required
+def llm_prompt_delete(pid):
+    prisma = get_prisma()
+    try:
+        prisma.labelingprompt.delete(where={"id": pid})
+        flash("提示词已删除", "success")
+    except Exception:
+        flash("删除失败", "error")
+    return redirect(url_for("admin.llm_config"))
+
+
+@admin_bp.route("/llm-config/test", methods=["POST"])
+@login_required
+def llm_config_test():
+    """测试 LLM 连接是否正常"""
+    from src.llm.client import predict_label
+    result = predict_label(
+        title="弱电智能化系统采购项目竞争性磋商公告",
+        content="XX市人民医院弱电智能化系统采购项目，采用竞争性磋商方式采购，预算金额200万元。采购内容包括综合布线、安防监控、楼宇自控等弱电系统。",
+        search_query="弱电 招标",
+    )
+    if result:
+        return jsonify({"ok": True, "result": result})
+    return jsonify({"ok": False, "error": "调用失败，请检查配置"}), 400
+
+
 def _reload_schedules():
     try:
         from src.scheduler.scheduler import sync_schedules
