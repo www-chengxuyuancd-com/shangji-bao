@@ -74,8 +74,8 @@
 <div class="admin-card">
     <h3 style="margin:0 0 16px 0; font-size:15px;">标注提示词配置</h3>
     <p style="font-size:12px; color:#999; margin:0 0 12px 0;">
-        提示词中可使用变量：<code>{search_query}</code>（搜索词）、<code>{title}</code>（标题）、<code>{content}</code>（内容摘要）。
-        输出必须为 JSON 格式 <code>{{"label": 1, "reason": "理由"}}</code>。
+        提示词中可使用变量：<code>&#123;search_query&#125;</code>（搜索词）、<code>&#123;title&#125;</code>（标题）、<code>&#123;content&#125;</code>（内容摘要）。
+        输出必须为 JSON 格式 <code>&#123;"label": 1, "reason": "理由"&#125;</code>。
     </p>
 
     {% if prompts %}
