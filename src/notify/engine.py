@@ -35,7 +35,7 @@ def _strip_region_suffix(name: str) -> str:
 
 
 def _build_region_name_set(regions, exclude_levels=None) -> set[str]:
-    """构建地区名称集合，同时包含原始名和去后缀名。"""
+    """构建地区名称集合。仅对市级别去后缀做模糊匹配，其余级别完全匹配。"""
     names = set()
     for r in regions:
         if exclude_levels and r.level in exclude_levels:
@@ -43,22 +43,23 @@ def _build_region_name_set(regions, exclude_levels=None) -> set[str]:
         if not r.name or len(r.name) < 2:
             continue
         names.add(r.name)
-        stripped = _strip_region_suffix(r.name)
-        if len(stripped) >= 2:
-            names.add(stripped)
+        if r.level == "city":
+            stripped = _strip_region_suffix(r.name)
+            if len(stripped) >= 2:
+                names.add(stripped)
     return names
 
 
 def _get_region_names_for_filter(prisma):
-    """获取区/县及以下级别的地区名称（排除省级别，太宽泛），包含去后缀版本。"""
+    """获取市级及以下的地区名称（排除省级别，范围太广）。市级去后缀模糊匹配，其余完全匹配。"""
     all_regions = prisma.searchregion.find_many()
     return _build_region_name_set(all_regions, exclude_levels={"province"})
 
 
 def _get_all_region_names(prisma):
-    """获取所有地区名称（用于内容匹配显示），包含去后缀版本。"""
+    """获取所有地区名称（用于内容匹配显示）。排除省级别，市级去后缀，其余完全匹配。"""
     all_regions = prisma.searchregion.find_many()
-    return _build_region_name_set(all_regions)
+    return _build_region_name_set(all_regions, exclude_levels={"province"})
 
 
 def _match_region(location, region_names):
