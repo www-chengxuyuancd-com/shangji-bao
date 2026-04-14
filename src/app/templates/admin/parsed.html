@@ -42,8 +42,9 @@
             <form method="post" action="{{ url_for('admin.parse_rejudge') }}" style="display:inline;">
                 <button type="submit" class="btn btn-sm {{ 'btn-primary' if model_exists else 'btn-ghost' }}"
                         style="border-color:#722ed1; color:{{ '#fff' if model_exists else '#722ed1' }}; {{ 'background:#722ed1;' if model_exists else '' }}"
-                        onclick="return confirm('将使用最新的 FastText 模型重新判定所有已解析结果的相关性，确定继续？')"
-                        {{ 'disabled title=请先在数据标注页面训练模型' if not model_exists else 'title=用最新模型重新评估相关性' }}>
+                        onclick="return confirm('将使用最新的模型（{{ '🧠 BERT' if bert_model_exists else 'FastText' }}）重新判定所有已解析结果的相关性，确定继续？')"
+                        {{ 'disabled title=请先在数据标注页面训练模型' if not model_exists else '' }}
+                        title="{{ '🧠 BERT 模型可用，优先使用 BERT' if bert_model_exists else '使用 FastText 模型' }}">
                     🔄 重新判定相关性
                 </button>
             </form>

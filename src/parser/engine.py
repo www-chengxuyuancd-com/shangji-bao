@@ -268,19 +268,35 @@ def _run_relevance_rejudge(job_id: int):
             data={"status": "running", "startedAt": datetime.now(timezone.utc)},
         )
 
-        from src.classifier.predictor import RelevancePredictor
-        RelevancePredictor.reload()
-        predictor = RelevancePredictor.get_instance()
-        if not predictor.available:
+        bert_available = False
+        try:
+            from src.classifier.bert_predictor import BertRelevancePredictor
+            BertRelevancePredictor.reload()
+            bert_available = BertRelevancePredictor.get_instance().available
+        except Exception:
+            pass
+
+        fasttext_available = False
+        try:
+            from src.classifier.predictor import RelevancePredictor
+            RelevancePredictor.reload()
+            fasttext_available = RelevancePredictor.get_instance().available
+        except Exception:
+            pass
+
+        if not bert_available and not fasttext_available:
             prisma.crawljob.update(
                 where={"id": job_id},
                 data={
                     "status": "failed",
                     "finishedAt": datetime.now(timezone.utc),
-                    "errorLog": "FastText 模型不存在，请先在数据标注页面训练模型",
+                    "errorLog": "没有可用的分类模型（BERT / FastText），请先在数据标注页面训练模型",
                 },
             )
             return
+
+        model_name = "BERT" if bert_available else "FastText"
+        logger.info("Relevance rejudge using %s model", model_name)
 
         user_keywords = [kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})]
 

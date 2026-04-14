@@ -632,7 +632,16 @@ def parsed_list():
         _os.getenv("MODEL_DIR", _os.path.join(_os.path.dirname(__file__), "..", "..", "classifier", "data", "models")),
         "relevance_model.bin",
     )
-    model_exists = _os.path.exists(model_path)
+    fasttext_exists = _os.path.exists(model_path)
+
+    bert_model_exists = False
+    try:
+        from src.classifier.bert_trainer import BERT_MODEL_DIR
+        bert_model_exists = _os.path.exists(_os.path.join(BERT_MODEL_DIR, "config.json"))
+    except Exception:
+        pass
+
+    model_exists = bert_model_exists or fasttext_exists
 
     return render_template(
         "admin/parsed.html",
@@ -652,6 +661,7 @@ def parsed_list():
         mongo_total=mongo_total,
         unparsed=unparsed,
         model_exists=model_exists,
+        bert_model_exists=bert_model_exists,
     )
 
 
