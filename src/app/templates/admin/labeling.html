@@ -37,24 +37,20 @@
                     FastText{{ ' (' + labeled_count|string + '/50)' if labeled_count < 50 else '' }}
                 </button>
             </form>
-            <form method="post" action="{{ url_for('admin.labeling_train_bert') }}" style="display:inline;">
-                <button type="submit" class="btn btn-sm"
-                        style="background:#1890ff; color:#fff; border-color:#1890ff;"
-                        {{ 'disabled' if labeled_count < 20 else '' }}
-                        onclick="return confirm('用 {{ labeled_count }} 条样本训练 BERT 模型？训练时间较长，请耐心等待。')"
-                        title="{{ '至少需要 20 条已标注样本' if labeled_count < 20 else '训练 BERT 深度语义模型（输出 0~1 分数）' }}">
-                    🧠 BERT{{ ' (' + labeled_count|string + '/20)' if labeled_count < 20 else '' }}
-                </button>
-            </form>
-            <form method="post" action="{{ url_for('admin.labeling_train_notice') }}" style="display:inline;">
-                <button type="submit" class="btn btn-sm"
-                        style="background:#13c2c2; color:#fff; border-color:#13c2c2;"
-                        {{ 'disabled' if notice_type_count < 20 else '' }}
-                        onclick="return confirm('用 {{ notice_type_count }} 条已有公告类型数据训练分类模型？')"
-                        title="{{ '至少需要 20 条有公告类型的解析数据' if notice_type_count < 20 else '训练公告类型多分类模型' }}">
-                    📋 公告类型{{ ' (' + notice_type_count|string + '/20)' if notice_type_count < 20 else '' }}
-                </button>
-            </form>
+            <button type="button" id="btn-train-bert" class="btn btn-sm"
+                    style="background:#1890ff; color:#fff; border-color:#1890ff;"
+                    {{ 'disabled' if labeled_count < 20 else '' }}
+                    onclick="startBertTraining()"
+                    title="{{ '至少需要 20 条已标注样本' if labeled_count < 20 else '训练 BERT 深度语义模型（输出 0~1 分数）' }}">
+                🧠 BERT{{ ' (' + labeled_count|string + '/20)' if labeled_count < 20 else '' }}
+            </button>
+            <button type="button" id="btn-train-notice" class="btn btn-sm"
+                    style="background:#13c2c2; color:#fff; border-color:#13c2c2;"
+                    {{ 'disabled' if notice_type_count < 20 else '' }}
+                    onclick="startNoticeTraining()"
+                    title="{{ '至少需要 20 条有公告类型的解析数据' if notice_type_count < 20 else '训练公告类型多分类模型' }}">
+                📋 公告类型{{ ' (' + notice_type_count|string + '/20)' if notice_type_count < 20 else '' }}
+            </button>
         </div>
     </div>
 </div>
@@ -413,6 +409,117 @@ function batchDelete() {
         }
     })
     .catch(function(){showToast('请求失败','error');});
+}
+
+function _getOrCreateTrainBar() {
+    var bar = document.getElementById('train-progress');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'train-progress';
+        bar.style.cssText = 'margin-bottom:10px; padding:10px 14px; background:#e6f7ff; border:1px solid #91d5ff; border-radius:4px; font-size:13px;';
+        var card = document.querySelector('.admin-card');
+        card.parentNode.insertBefore(bar, card.nextSibling);
+    }
+    bar.style.display = '';
+    return bar;
+}
+
+function startBertTraining() {
+    if (!confirm('用已标注样本训练 BERT 模型？训练时间较长（几分钟），请耐心等待。')) return;
+    var btn = document.getElementById('btn-train-bert');
+    btn.disabled = true;
+    btn.textContent = '🧠 训练中...';
+    var bar = _getOrCreateTrainBar();
+    bar.innerHTML = '<span style="color:#1890ff;">🧠 BERT 训练启动中...</span>';
+
+    fetch('{{ url_for("admin.labeling_train_bert") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (!d.ok) {
+            bar.innerHTML = '<span style="color:#ff4d4f;">❌ ' + (d.error || '启动失败') + '</span>';
+            btn.disabled = false;
+            btn.textContent = '🧠 BERT';
+            return;
+        }
+        _pollTrainingStatus('bert');
+    })
+    .catch(function() {
+        bar.innerHTML = '<span style="color:#ff4d4f;">❌ 请求失败</span>';
+        btn.disabled = false;
+        btn.textContent = '🧠 BERT';
+    });
+}
+
+function startNoticeTraining() {
+    if (!confirm('用已有公告类型数据训练分类模型？训练时间较长，请耐心等待。')) return;
+    var btn = document.getElementById('btn-train-notice');
+    btn.disabled = true;
+    btn.textContent = '📋 训练中...';
+    var bar = _getOrCreateTrainBar();
+    bar.innerHTML = '<span style="color:#13c2c2;">📋 公告类型训练启动中...</span>';
+
+    fetch('{{ url_for("admin.labeling_train_notice") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (!d.ok) {
+            bar.innerHTML = '<span style="color:#ff4d4f;">❌ ' + (d.error || '启动失败') + '</span>';
+            btn.disabled = false;
+            btn.textContent = '📋 公告类型';
+            return;
+        }
+        _pollTrainingStatus('notice');
+    })
+    .catch(function() {
+        bar.innerHTML = '<span style="color:#ff4d4f;">❌ 请求失败</span>';
+        btn.disabled = false;
+        btn.textContent = '📋 公告类型';
+    });
+}
+
+function _pollTrainingStatus(type) {
+    var url = type === 'bert'
+        ? '{{ url_for("admin.labeling_train_bert_status") }}'
+        : '{{ url_for("admin.labeling_train_notice_status") }}';
+    var icon = type === 'bert' ? '🧠' : '📋';
+    var color = type === 'bert' ? '#1890ff' : '#13c2c2';
+    var btnId = type === 'bert' ? 'btn-train-bert' : 'btn-train-notice';
+    var bar = document.getElementById('train-progress');
+
+    function poll() {
+        fetch(url, { headers: {'X-Requested-With': 'XMLHttpRequest'} })
+        .then(function(r) { return r.json(); })
+        .then(function(s) {
+            if (s.running) {
+                bar.innerHTML = '<span style="color:' + color + ';">' + icon + ' ' + (s.progress || '训练中...') + '</span>';
+                setTimeout(poll, 3000);
+            } else {
+                var btn = document.getElementById(btnId);
+                if (s.result && s.result.success) {
+                    var msg = icon + ' 训练完成！样本 ' + s.result.samples + ' 条，准确率 ' + s.result.val_accuracy;
+                    bar.innerHTML = '<span style="color:#52c41a;">✔ ' + msg + '</span>';
+                    showToast(msg, 'success');
+                    btn.textContent = icon + (type === 'bert' ? ' BERT' : ' 公告类型');
+                } else {
+                    var err = (s.result && s.result.error) || '未知错误';
+                    bar.innerHTML = '<span style="color:#ff4d4f;">❌ 训练失败: ' + err + '</span>';
+                    showToast('训练失败: ' + err, 'error');
+                    btn.textContent = icon + (type === 'bert' ? ' BERT' : ' 公告类型');
+                }
+                btn.disabled = false;
+                setTimeout(function() { bar.style.display = 'none'; }, 15000);
+            }
+        })
+        .catch(function() {
+            setTimeout(poll, 5000);
+        });
+    }
+    setTimeout(poll, 2000);
 }
 </script>
 {% endblock %}

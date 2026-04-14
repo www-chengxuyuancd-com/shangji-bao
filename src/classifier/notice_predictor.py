@@ -8,9 +8,6 @@ import os
 import json
 import threading
 
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
 logger = logging.getLogger(__name__)
 
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "data", "models"))
@@ -40,11 +37,15 @@ class NoticeTypePredictor:
         self._model = None
         self._tokenizer = None
         self._labels = DEFAULT_LABELS
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = None
 
         config_path = os.path.join(NOTICE_MODEL_DIR, "config.json")
         if os.path.exists(config_path):
             try:
+                import torch
+                from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+                self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self._tokenizer = AutoTokenizer.from_pretrained(NOTICE_MODEL_DIR)
                 self._model = AutoModelForSequenceClassification.from_pretrained(NOTICE_MODEL_DIR)
                 self._model.to(self._device)
@@ -72,6 +73,8 @@ class NoticeTypePredictor:
         if not self._model:
             return None
         try:
+            import torch
+
             input_text = f"{title} [SEP] {text[:500]}" if title else text[:500]
             enc = self._tokenizer(
                 input_text,

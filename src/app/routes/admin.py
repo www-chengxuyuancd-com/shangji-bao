@@ -1318,38 +1318,47 @@ def labeling_train():
 @admin_bp.route("/labeling/train-bert", methods=["POST"])
 @login_required
 def labeling_train_bert():
-    from src.classifier.bert_trainer import train_bert_model
-    prisma = get_prisma()
-    result = train_bert_model(prisma)
-    if result.get("success"):
-        flash(
-            f"BERT 相关性模型训练完成！样本 {result['samples']} 条"
-            f"（相关 {result['relevant']} / 不相关 {result['irrelevant']}），"
-            f"验证准确率 {result['val_accuracy']}",
-            "success",
-        )
-    else:
-        flash(f"BERT 训练失败: {result.get('error', '未知错误')}", "error")
-    return redirect(url_for("admin.labeling_list"))
+    import os
+    from src.classifier.bert_trainer import start_training_async, get_training_status
+    status = get_training_status()
+    if status["running"]:
+        return jsonify({"ok": False, "error": "BERT 训练正在进行中，请等待完成"})
+    db_url = os.environ.get("DATABASE_URL", "")
+    started = start_training_async(db_url)
+    if not started:
+        return jsonify({"ok": False, "error": "无法启动训练"})
+    return jsonify({"ok": True, "message": "BERT 训练已启动"})
+
+
+@admin_bp.route("/labeling/train-bert-status", methods=["GET"])
+@login_required
+def labeling_train_bert_status():
+    from src.classifier.bert_trainer import get_training_status
+    status = get_training_status()
+    return jsonify(status)
 
 
 @admin_bp.route("/labeling/train-notice", methods=["POST"])
 @login_required
 def labeling_train_notice():
-    from src.classifier.notice_trainer import train_notice_model
-    prisma = get_prisma()
-    result = train_notice_model(prisma)
-    if result.get("success"):
-        dist = result.get("label_distribution", {})
-        dist_str = ", ".join(f"{k}:{v}" for k, v in dist.items())
-        flash(
-            f"公告类型模型训练完成！样本 {result['samples']} 条（{dist_str}），"
-            f"验证准确率 {result['val_accuracy']}",
-            "success",
-        )
-    else:
-        flash(f"公告类型训练失败: {result.get('error', '未知错误')}", "error")
-    return redirect(url_for("admin.labeling_list"))
+    import os
+    from src.classifier.notice_trainer import start_training_async, get_training_status
+    status = get_training_status()
+    if status["running"]:
+        return jsonify({"ok": False, "error": "公告类型训练正在进行中，请等待完成"})
+    db_url = os.environ.get("DATABASE_URL", "")
+    started = start_training_async(db_url)
+    if not started:
+        return jsonify({"ok": False, "error": "无法启动训练"})
+    return jsonify({"ok": True, "message": "公告类型训练已启动"})
+
+
+@admin_bp.route("/labeling/train-notice-status", methods=["GET"])
+@login_required
+def labeling_train_notice_status():
+    from src.classifier.notice_trainer import get_training_status
+    status = get_training_status()
+    return jsonify(status)
 
 
 @admin_bp.route("/labeling/ai-predict-one", methods=["POST"])

@@ -7,6 +7,11 @@
 import logging
 import os
 import json
+import threading
+
+os.environ["SAFETENSORS_FAST_GPU"] = "0"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -18,6 +23,8 @@ MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..",
 NOTICE_MODEL_DIR = os.path.join(MODEL_DIR, "bert_notice_type")
 BASE_MODEL = "hfl/chinese-roberta-wwm-ext"
 HF_MIRROR = os.getenv("HF_MIRROR", "https://hf-mirror.com")
+
+_training_status = {"running": False, "progress": "", "result": None}
 
 NOTICE_LABELS = ["招标", "中标", "变更公告", "废标公告", "采购意向", "预招标", "合同", "验收公告", "其他"]
 
@@ -71,6 +78,10 @@ def _prepare_notice_data(prisma):
     return texts, labels
 
 
+def get_training_status():
+    return dict(_training_status)
+
+
 def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
     """微调 BERT 公告类型多分类模型。"""
     own_prisma = prisma is None
@@ -80,6 +91,7 @@ def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
         prisma.connect()
 
     try:
+        _training_status["progress"] = "准备数据..."
         texts, labels = _prepare_notice_data(prisma)
         total = len(texts)
 
@@ -91,14 +103,22 @@ def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
             name = NOTICE_LABELS[l]
             label_dist[name] = label_dist.get(name, 0) + 1
 
+        _training_status["progress"] = "加载预训练模型..."
         os.environ["HF_ENDPOINT"] = HF_MIRROR
-        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+        tokenizer = AutoTokenizer.from_pretrained(
+            BASE_MODEL,
+            use_safetensors=False,
+        )
         model = AutoModelForSequenceClassification.from_pretrained(
-            BASE_MODEL, num_labels=len(NOTICE_LABELS)
+            BASE_MODEL,
+            num_labels=len(NOTICE_LABELS),
+            use_safetensors=False,
+            ignore_mismatched_sizes=True,
         )
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
 
+        _training_status["progress"] = "构建数据集..."
         dataset = NoticeTypeDataset(texts, labels, tokenizer)
         val_size = max(int(total * 0.15), 2)
         train_size = total - val_size
@@ -111,6 +131,7 @@ def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
 
         best_acc = 0.0
         for epoch in range(epochs):
+            _training_status["progress"] = f"训练 Epoch {epoch + 1}/{epochs}..."
             model.train()
             total_loss = 0
             for batch in train_loader:
@@ -136,10 +157,13 @@ def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
                     total_val += batch_labels.size(0)
 
             acc = correct / total_val if total_val > 0 else 0
-            logger.info("Notice Epoch %d/%d - loss: %.4f, val_acc: %.4f", epoch + 1, epochs, total_loss / len(train_loader), acc)
+            avg_loss = total_loss / len(train_loader)
+            _training_status["progress"] = f"Epoch {epoch + 1}/{epochs} 完成 - loss: {avg_loss:.4f}, acc: {acc:.4f}"
+            logger.info("Notice Epoch %d/%d - loss: %.4f, val_acc: %.4f", epoch + 1, epochs, avg_loss, acc)
             if acc >= best_acc:
                 best_acc = acc
 
+        _training_status["progress"] = "保存模型..."
         os.makedirs(NOTICE_MODEL_DIR, exist_ok=True)
         model.save_pretrained(NOTICE_MODEL_DIR)
         tokenizer.save_pretrained(NOTICE_MODEL_DIR)
@@ -166,3 +190,30 @@ def train_notice_model(prisma=None, epochs=5, batch_size=16, lr=2e-5) -> dict:
     finally:
         if own_prisma:
             prisma.disconnect()
+
+
+def start_training_async(db_url: str, epochs=5, batch_size=16, lr=2e-5):
+    """在后台线程启动训练。"""
+    if _training_status["running"]:
+        return False
+
+    _training_status["running"] = True
+    _training_status["progress"] = "初始化..."
+    _training_status["result"] = None
+
+    def _run():
+        from prisma import Prisma
+        prisma = Prisma()
+        prisma.connect()
+        try:
+            result = train_notice_model(prisma, epochs=epochs, batch_size=batch_size, lr=lr)
+            _training_status["result"] = result
+        except Exception as e:
+            _training_status["result"] = {"success": False, "error": str(e)}
+        finally:
+            prisma.disconnect()
+            _training_status["running"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True
