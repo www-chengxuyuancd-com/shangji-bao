@@ -51,22 +51,44 @@ def _build_region_name_set(regions, exclude_levels=None) -> set[str]:
 
 
 def _get_region_names_for_filter(prisma):
-    """获取市级及以下的地区名称（排除省级别，范围太广）。市级去后缀模糊匹配，其余完全匹配。"""
-    all_regions = prisma.searchregion.find_many()
-    return _build_region_name_set(all_regions, exclude_levels={"province"})
+    """获取已启用的区域名称集合（排除省级别）。"""
+    enabled_regions = prisma.searchregion.find_many(where={"enabled": True})
+    return _build_region_name_set(enabled_regions, exclude_levels={"province"})
+
+
+def _get_disabled_region_names(prisma):
+    """获取已禁用的区域名称集合（排除省级别），用于检测内容是否命中了被排除的区域。"""
+    disabled_regions = prisma.searchregion.find_many(where={"enabled": False})
+    return _build_region_name_set(disabled_regions, exclude_levels={"province"})
 
 
 def _get_all_region_names(prisma):
-    """获取所有地区名称（用于内容匹配显示）。排除省级别，市级去后缀，其余完全匹配。"""
+    """获取所有区域名称（用于内容匹配显示）。排除省级别，市级去后缀，其余完全匹配。"""
     all_regions = prisma.searchregion.find_many()
     return _build_region_name_set(all_regions, exclude_levels={"province"})
 
 
-def _match_region(location, region_names):
-    """检查 location 是否匹配后台配置的任意地区（区/县及以下）。"""
+def _match_region(location, enabled_names, disabled_names=None):
+    """
+    检查 location 是否匹配已启用区域。
+    返回 (matched: bool, excluded_name: str|None)
+    - matched=True: location 命中了启用区域
+    - matched=False + excluded_name: 命中了被禁用的区域（给出具体区域名）
+    - matched=False + excluded_name=None: 未命中任何区域
+    """
     if not location:
-        return True
-    return any(name in location for name in region_names)
+        return True, None
+
+    for name in enabled_names:
+        if name in location:
+            return True, None
+
+    if disabled_names:
+        for name in disabled_names:
+            if name in location:
+                return False, name
+
+    return False, None
 
 
 def _find_matched_regions(title: str, content: str, all_region_names: set) -> str:
@@ -106,8 +128,14 @@ def _format_message(item) -> tuple[str, str]:
     return title, "\n".join(parts)
 
 
-def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=None) -> str | None:
-    """检查一条 ParsedResult 是否应被跳过。返回跳过原因或 None（符合条件）。"""
+def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=None, disabled_region_names=None) -> str | None:
+    """
+    检查一条 ParsedResult 是否应被跳过。
+    返回跳过原因或 None（符合条件）。
+    原因格式：
+    - "region" — 未匹配任何启用区域
+    - "region:赤壁市" — 命中了被排除的区域
+    """
     now = datetime.now(timezone.utc)
 
     if cfg.onlyRelevant and item.isRelevant is not True:
@@ -121,8 +149,13 @@ def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=No
             if bw in item.title:
                 return "blacklist"
 
-    if cfg.filterRegion and not _match_region(item.location, region_names):
-        return "region"
+    if cfg.filterRegion:
+        text_to_check = f"{item.title or ''} {item.location or ''}"
+        matched, excluded = _match_region(text_to_check, region_names, disabled_region_names)
+        if not matched:
+            if excluded:
+                return f"region:{excluded}"
+            return "region"
 
     cutoff = now - timedelta(days=cfg.filterDays)
     date_ok = False
@@ -163,6 +196,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
             blacklist_words = {w.strip() for w in cfg.titleBlacklist.split(",") if w.strip()}
 
         region_names = _get_region_names_for_filter(prisma)
+        disabled_region_names = _get_disabled_region_names(prisma)
         all_region_names = _get_all_region_names(prisma)
 
         all_items = prisma.parsedresult.find_many(
@@ -182,7 +216,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                     continue
 
                 title, content = _format_message(item)
-                skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words)
+                skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
                 matched_region = _find_matched_regions(
                     item.title, item.summary or item.location or "", all_region_names
                 )
@@ -306,6 +340,7 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
             blacklist_words = {w.strip() for w in cfg.titleBlacklist.split(",") if w.strip()}
 
         region_names = _get_region_names_for_filter(prisma)
+        disabled_region_names = _get_disabled_region_names(prisma)
         all_region_names = _get_all_region_names(prisma)
 
         msgs = prisma.notifymessage.find_many(
@@ -329,7 +364,7 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
             if not item:
                 continue
 
-            skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words)
+            skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
             matched_region = _find_matched_regions(
                 item.title, item.summary or item.location or "", all_region_names
             )

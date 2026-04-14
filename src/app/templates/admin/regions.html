@@ -1,5 +1,18 @@
 {% extends "admin/base_admin.html" %}
 
+{% macro _level_tag(level, label) %}
+<span style="display:inline-block; font-size:11px; padding:1px 6px; border-radius:3px; margin-right:8px;
+    {% if level == 'province' %}background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;
+    {% elif level == 'city' %}background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;
+    {% elif level == 'district' %}background:#fff7e6;color:#d48806;border:1px solid #ffe58f;
+    {% elif level == 'street' %}background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;
+    {% elif level == 'town' %}background:#fff1f0;color:#ff4d4f;border:1px solid #ffa39e;
+    {% elif level == 'village' %}background:#fcffe6;color:#7cb305;border:1px solid #d3e89e;
+    {% elif level == 'community' %}background:#e6fffb;color:#13c2c2;border:1px solid #87e8de;
+    {% else %}background:#f5f5f5;color:#666;border:1px solid #d9d9d9;
+    {% endif %}">{{ label }}</span>
+{% endmacro %}
+
 {% block admin_content %}
 <h1>地区管理</h1>
 
@@ -15,14 +28,21 @@
                 <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="batchToggle(false)">批量禁用</button>
                 <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消</button>
             </div>
-            <button type="button" class="btn btn-ghost btn-sm" onclick="expandAll()">全部展开</button>
-            <button type="button" class="btn btn-ghost btn-sm" onclick="collapseAll()">全部折叠</button>
         </div>
     </div>
 </div>
 
-<div class="admin-card">
-    <details style="margin-bottom:16px;">
+<div class="admin-card" style="margin-bottom:16px;">
+    <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="region-search" class="form-input" placeholder="搜索地区名称（至少2个字）" style="flex:1; max-width:300px;">
+        <button type="button" class="btn btn-primary btn-sm" onclick="doSearch()">搜索</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="clearSearch()">清除</button>
+    </div>
+    <div id="search-results" style="display:none; margin-top:12px;"></div>
+</div>
+
+<div class="admin-card" style="margin-bottom:16px;">
+    <details style="margin-bottom:0;">
         <summary style="cursor:pointer; color:#1890ff; font-size:14px;">+ 添加地区</summary>
         <form method="post" action="{{ url_for('admin.region_add') }}" style="margin-top:12px;">
             <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
@@ -54,34 +74,23 @@
             </div>
         </form>
     </details>
+</div>
 
+<div class="admin-card">
     <div id="region-tree">
-        {% macro level_tag(level, label) %}
-        <span style="display:inline-block; font-size:11px; padding:1px 6px; border-radius:3px; margin-right:8px;
-            {% if level == 'province' %}background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;
-            {% elif level == 'city' %}background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;
-            {% elif level == 'district' %}background:#fff7e6;color:#d48806;border:1px solid #ffe58f;
-            {% elif level == 'street' %}background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;
-            {% elif level == 'town' %}background:#fff1f0;color:#ff4d4f;border:1px solid #ffa39e;
-            {% elif level == 'village' %}background:#fcffe6;color:#7cb305;border:1px solid #d3e89e;
-            {% elif level == 'community' %}background:#e6fffb;color:#13c2c2;border:1px solid #87e8de;
-            {% else %}background:#f5f5f5;color:#666;border:1px solid #d9d9d9;
-            {% endif %}">{{ label }}</span>
-        {% endmacro %}
-
-        {% macro render_node(node, depth=0) %}
-        <div class="tree-node" data-id="{{ node.id }}" style="margin-left:{{ depth * 24 }}px;">
+        {% for node in tree %}
+        <div class="tree-node" data-id="{{ node.id }}" style="margin-left:0;">
             <div class="tree-row" style="display:flex; align-items:center; padding:6px 8px; border-bottom:1px solid #f0f0f0; font-size:13px;">
-                {% if node.children %}
-                <span class="tree-toggle" onclick="toggleNode(this)" style="cursor:pointer; width:20px; text-align:center; color:#999; user-select:none; flex-shrink:0;">▶</span>
+                {% if node.child_count > 0 %}
+                <span class="tree-toggle" onclick="toggleNode(this, {{ node.id }})" style="cursor:pointer; width:20px; text-align:center; color:#999; user-select:none; flex-shrink:0;">▶</span>
                 {% else %}
                 <span style="width:20px; text-align:center; color:#ddd; font-size:10px; flex-shrink:0;">●</span>
                 {% endif %}
                 <input type="checkbox" class="region-check" value="{{ node.id }}" onclick="updateBatch()" style="margin-right:8px; flex-shrink:0;">
-                {{ level_tag(node.level, node.level_label) }}
-                <span style="flex:1; font-weight:{{ 'bold' if depth < 2 else 'normal' }}; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                {{ _level_tag(node.level, node.level_label) }}
+                <span style="flex:1; font-weight:bold; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                     {{ node.name }}
-                    {% if node.children %}<span style="color:#bbb; font-size:11px; font-weight:normal;"> ({{ node.children|length }})</span>{% endif %}
+                    {% if node.child_count > 0 %}<span style="color:#bbb; font-size:11px; font-weight:normal;"> ({{ node.child_count }})</span>{% endif %}
                 </span>
                 {% if node.code %}<span style="color:#999; font-size:11px; margin-right:12px; flex-shrink:0;">{{ node.code }}</span>{% endif %}
                 <span id="badge-{{ node.id }}" style="margin-right:8px; flex-shrink:0;">
@@ -96,24 +105,16 @@
                             onclick="ajaxToggle('{{ url_for('admin.region_toggle', rid=node.id) }}', this.closest('.tree-row'))">
                         {{ '禁用' if node.enabled else '启用' }}
                     </button>
-                    {% if node.children %}
+                    {% if node.child_count > 0 %}
                     <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px; padding:1px 6px; color:#1890ff;"
                             onclick="selectChildren({{ node.id }})">选子级</button>
                     {% endif %}
                 </span>
             </div>
-            {% if node.children %}
-            <div class="tree-children" data-parent="{{ node.id }}" style="display:none;">
-                {% for child in node.children %}
-                {{ render_node(child, depth + 1) }}
-                {% endfor %}
-            </div>
+            {% if node.child_count > 0 %}
+            <div class="tree-children" data-parent="{{ node.id }}" style="display:none;"></div>
             {% endif %}
         </div>
-        {% endmacro %}
-
-        {% for root in tree %}
-        {{ render_node(root, 0) }}
         {% endfor %}
 
         {% if not tree %}
@@ -123,59 +124,123 @@
 </div>
 
 <script>
-function toggleNode(el) {
+var LEVEL_COLORS = {
+    'province': 'background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;',
+    'city': 'background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;',
+    'district': 'background:#fff7e6;color:#d48806;border:1px solid #ffe58f;',
+    'street': 'background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;',
+    'town': 'background:#fff1f0;color:#ff4d4f;border:1px solid #ffa39e;',
+    'village': 'background:#fcffe6;color:#7cb305;border:1px solid #d3e89e;',
+    'community': 'background:#e6fffb;color:#13c2c2;border:1px solid #87e8de;'
+};
+
+function _renderNodeHtml(node, depth) {
+    var hasChildren = node.child_count > 0;
+    var toggleUrl = '{{ url_for("admin.region_toggle", rid=0) }}'.replace('/0/', '/' + node.id + '/');
+    var toggle = hasChildren
+        ? '<span class="tree-toggle" onclick="toggleNode(this, ' + node.id + ')" style="cursor:pointer;width:20px;text-align:center;color:#999;user-select:none;flex-shrink:0;">▶</span>'
+        : '<span style="width:20px;text-align:center;color:#ddd;font-size:10px;flex-shrink:0;">●</span>';
+    var levelStyle = LEVEL_COLORS[node.level] || 'background:#f5f5f5;color:#666;border:1px solid #d9d9d9;';
+    var levelTag = '<span style="display:inline-block;font-size:11px;padding:1px 6px;border-radius:3px;margin-right:8px;' + levelStyle + '">' + node.level_label + '</span>';
+    var badge = node.enabled
+        ? '<span class="badge-enabled">&#9679; 启用</span>'
+        : '<span class="badge-disabled">&#9679; 禁用</span>';
+    var btnLabel = node.enabled ? '禁用' : '启用';
+    var childCountSpan = hasChildren ? ' <span style="color:#bbb;font-size:11px;font-weight:normal;">(' + node.child_count + ')</span>' : '';
+    var selectBtn = hasChildren ? ' <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px;padding:1px 6px;color:#1890ff;" onclick="selectChildren(' + node.id + ')">选子级</button>' : '';
+    var codeSpan = node.code ? '<span style="color:#999;font-size:11px;margin-right:12px;flex-shrink:0;">' + node.code + '</span>' : '';
+    var fw = depth < 2 ? 'bold' : 'normal';
+
+    var html = '<div class="tree-node" data-id="' + node.id + '" style="margin-left:' + (depth * 24) + 'px;">'
+        + '<div class="tree-row" style="display:flex;align-items:center;padding:6px 8px;border-bottom:1px solid #f0f0f0;font-size:13px;">'
+        + toggle
+        + '<input type="checkbox" class="region-check" value="' + node.id + '" onclick="updateBatch()" style="margin-right:8px;flex-shrink:0;">'
+        + levelTag
+        + '<span style="flex:1;font-weight:' + fw + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        + node.name + childCountSpan + '</span>'
+        + codeSpan
+        + '<span id="badge-' + node.id + '" style="margin-right:8px;flex-shrink:0;">' + badge + '</span>'
+        + '<span style="white-space:nowrap;flex-shrink:0;">'
+        + '<button type="button" class="btn btn-ghost btn-sm toggle-btn" style="font-size:11px;padding:1px 6px;" onclick="ajaxToggle(\'' + toggleUrl + '\',this.closest(\'.tree-row\'))">' + btnLabel + '</button>'
+        + selectBtn
+        + '</span></div>';
+
+    if (hasChildren) {
+        html += '<div class="tree-children" data-parent="' + node.id + '" style="display:none;"></div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+var _loadedParents = {};
+
+function toggleNode(el, parentId) {
     var node = el.closest('.tree-node');
-    var children = null;
-    for (var i = 0; i < node.children.length; i++) {
-        if (node.children[i].classList && node.children[i].classList.contains('tree-children')) {
-            children = node.children[i];
-            break;
+    var childrenDiv = node.querySelector('.tree-children[data-parent="' + parentId + '"]');
+    if (!childrenDiv) return;
+
+    var isOpen = childrenDiv.style.display !== 'none';
+    if (isOpen) {
+        childrenDiv.style.display = 'none';
+        el.textContent = '▶';
+        return;
+    }
+
+    childrenDiv.style.display = '';
+    el.textContent = '▼';
+
+    if (_loadedParents[parentId]) return;
+
+    childrenDiv.innerHTML = '<div style="padding:8px 16px;color:#999;font-size:12px;">加载中...</div>';
+    fetch('{{ url_for("admin.region_children", parent_id=0) }}'.replace('/0', '/' + parentId), {
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(nodes) {
+        var depth = 0;
+        var p = childrenDiv.parentElement;
+        while (p && p.id !== 'region-tree') {
+            if (p.classList && p.classList.contains('tree-node')) depth++;
+            p = p.parentElement;
         }
-    }
-    if (!children) return;
-    var isOpen = children.style.display !== 'none';
-    children.style.display = isOpen ? 'none' : '';
-    el.textContent = isOpen ? '▶' : '▼';
-}
 
-function expandAll() {
-    document.querySelectorAll('.tree-children').forEach(function(c){ c.style.display = ''; });
-    document.querySelectorAll('.tree-toggle').forEach(function(t){ t.textContent = '▼'; });
-}
-
-function collapseAll() {
-    document.querySelectorAll('.tree-children').forEach(function(c){ c.style.display = 'none'; });
-    document.querySelectorAll('.tree-toggle').forEach(function(t){ t.textContent = '▶'; });
-}
-
-function expandNode(node) {
-    var allSubs = node.querySelectorAll('.tree-children');
-    for (var i = 0; i < allSubs.length; i++) {
-        allSubs[i].style.display = '';
-    }
-    var allToggles = node.querySelectorAll('.tree-toggle');
-    for (var i = 0; i < allToggles.length; i++) {
-        allToggles[i].textContent = '▼';
-    }
+        var html = '';
+        for (var i = 0; i < nodes.length; i++) {
+            html += _renderNodeHtml(nodes[i], depth);
+        }
+        childrenDiv.innerHTML = html;
+        _loadedParents[parentId] = true;
+    })
+    .catch(function() {
+        childrenDiv.innerHTML = '<div style="padding:8px 16px;color:#ff4d4f;font-size:12px;">加载失败</div>';
+    });
 }
 
 function selectChildren(parentId) {
-    var allNodes = document.querySelectorAll('.tree-node');
-    var parentNode = null;
-    for (var i = 0; i < allNodes.length; i++) {
-        if (allNodes[i].getAttribute('data-id') == parentId) {
-            parentNode = allNodes[i];
-            break;
+    var parentNode = document.querySelector('.tree-node[data-id="' + parentId + '"]');
+    if (!parentNode) return;
+
+    var childrenDiv = parentNode.querySelector('.tree-children[data-parent="' + parentId + '"]');
+    if (!childrenDiv) return;
+
+    if (!_loadedParents[parentId]) {
+        var toggle = parentNode.querySelector('.tree-toggle');
+        if (toggle) {
+            toggleNode(toggle, parentId);
+            setTimeout(function() { _selectAllInNode(parentNode); }, 800);
         }
+        return;
     }
-    if (!parentNode) { alert('节点未找到: ' + parentId); return; }
 
-    expandNode(parentNode);
+    childrenDiv.style.display = '';
+    var toggle = parentNode.querySelector('.tree-toggle');
+    if (toggle) toggle.textContent = '▼';
+    _selectAllInNode(parentNode);
+}
 
-    var allChecks = parentNode.querySelectorAll('input.region-check');
-    for (var i = 0; i < allChecks.length; i++) {
-        allChecks[i].checked = true;
-    }
+function _selectAllInNode(node) {
+    var checks = node.querySelectorAll('input.region-check');
+    for (var i = 0; i < checks.length; i++) checks[i].checked = true;
     updateBatch();
 }
 
@@ -186,7 +251,7 @@ function updateBatch() {
 }
 
 function clearSelection() {
-    document.querySelectorAll('.region-check').forEach(function(cb){ cb.checked = false; });
+    document.querySelectorAll('.region-check').forEach(function(cb) { cb.checked = false; });
     updateBatch();
 }
 
@@ -196,18 +261,18 @@ function batchToggle(enabled) {
     var action = enabled ? '启用' : '禁用';
     if (!confirm('确定' + action + '选中的 ' + checks.length + ' 个地区？')) return;
     var ids = [];
-    checks.forEach(function(cb){ ids.push(parseInt(cb.value)); });
+    checks.forEach(function(cb) { ids.push(parseInt(cb.value)); });
     fetch('{{ url_for("admin.region_batch_toggle") }}', {
-        method:'POST',
-        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
         body: JSON.stringify({ids: ids, enabled: enabled})
     })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
         if (d.ok) {
-            ids.forEach(function(id){
-                var badge = document.getElementById('badge-'+id);
-                var row = document.querySelector('.tree-node[data-id="'+id+'"] > .tree-row');
+            ids.forEach(function(id) {
+                var badge = document.getElementById('badge-' + id);
+                var row = document.querySelector('.tree-node[data-id="' + id + '"] > .tree-row');
                 if (badge) {
                     badge.innerHTML = enabled
                         ? '<span class="badge-enabled">&#9679; 启用</span>'
@@ -224,7 +289,85 @@ function batchToggle(enabled) {
             showToast(d.error || '操作失败', 'error');
         }
     })
-    .catch(function(){ showToast('请求失败', 'error'); });
+    .catch(function() { showToast('请求失败', 'error'); });
+}
+
+function doSearch() {
+    var q = document.getElementById('region-search').value.trim();
+    if (q.length < 2) { showToast('请输入至少2个字', 'info'); return; }
+    var resultDiv = document.getElementById('search-results');
+    resultDiv.style.display = '';
+    resultDiv.innerHTML = '<span style="color:#999; font-size:12px;">搜索中...</span>';
+
+    fetch('{{ url_for("admin.region_search") }}?q=' + encodeURIComponent(q), {
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(results) {
+        if (results.length === 0) {
+            resultDiv.innerHTML = '<span style="color:#999; font-size:13px;">未找到匹配的地区</span>';
+            return;
+        }
+        var html = '<div style="font-size:12px; color:#999; margin-bottom:8px;">找到 ' + results.length + ' 个结果</div>';
+        html += '<table style="width:100%; font-size:13px; border-collapse:collapse;">';
+        html += '<thead><tr><th style="padding:4px 8px; text-align:left; border-bottom:1px solid #f0f0f0;"><input type="checkbox" id="search-check-all" onclick="toggleSearchAll(this)"></th><th style="padding:4px 8px; text-align:left; border-bottom:1px solid #f0f0f0;">名称</th><th style="padding:4px 8px; text-align:left; border-bottom:1px solid #f0f0f0;">路径</th><th style="padding:4px 8px; text-align:left; border-bottom:1px solid #f0f0f0;">状态</th><th style="padding:4px 8px; text-align:left; border-bottom:1px solid #f0f0f0;">操作</th></tr></thead><tbody>';
+        for (var i = 0; i < results.length; i++) {
+            var r = results[i];
+            var levelStyle = LEVEL_COLORS[r.level] || '';
+            var badge = r.enabled ? '<span class="badge-enabled">启用</span>' : '<span class="badge-disabled">禁用</span>';
+            html += '<tr>'
+                + '<td style="padding:4px 8px; border-bottom:1px solid #f5f5f5;"><input type="checkbox" class="region-check search-result-check" value="' + r.id + '" onclick="updateBatch()"></td>'
+                + '<td style="padding:4px 8px; border-bottom:1px solid #f5f5f5;"><span style="display:inline-block;font-size:11px;padding:1px 6px;border-radius:3px;margin-right:4px;' + levelStyle + '">' + r.level_label + '</span>' + r.name + '</td>'
+                + '<td style="padding:4px 8px; border-bottom:1px solid #f5f5f5; color:#999; font-size:12px;">' + r.path + '</td>'
+                + '<td id="search-badge-' + r.id + '" style="padding:4px 8px; border-bottom:1px solid #f5f5f5;">' + badge + '</td>'
+                + '<td style="padding:4px 8px; border-bottom:1px solid #f5f5f5;"><button type="button" class="btn btn-ghost btn-sm toggle-btn" style="font-size:11px; padding:1px 6px;" onclick="ajaxToggleSearch(' + r.id + ', this)">' + (r.enabled ? '禁用' : '启用') + '</button></td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        resultDiv.innerHTML = html;
+    })
+    .catch(function() { resultDiv.innerHTML = '<span style="color:#ff4d4f; font-size:13px;">搜索失败</span>'; });
+}
+
+function clearSearch() {
+    document.getElementById('region-search').value = '';
+    document.getElementById('search-results').style.display = 'none';
+    document.getElementById('search-results').innerHTML = '';
+}
+
+function toggleSearchAll(el) {
+    var checks = document.querySelectorAll('.search-result-check');
+    for (var i = 0; i < checks.length; i++) checks[i].checked = el.checked;
+    updateBatch();
+}
+
+document.getElementById('region-search').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+});
+
+function ajaxToggleSearch(rid, btn) {
+    var url = '{{ url_for("admin.region_toggle", rid=0) }}'.replace('/0/', '/' + rid + '/');
+    fetch(url, {method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok) {
+            var badge = document.getElementById('search-badge-' + rid);
+            if (badge) {
+                badge.innerHTML = d.enabled
+                    ? '<span class="badge-enabled">启用</span>'
+                    : '<span class="badge-disabled">禁用</span>';
+            }
+            btn.textContent = d.enabled ? '禁用' : '启用';
+            var treeBadge = document.getElementById('badge-' + rid);
+            if (treeBadge) {
+                treeBadge.innerHTML = d.enabled
+                    ? '<span class="badge-enabled">&#9679; 启用</span>'
+                    : '<span class="badge-disabled">&#9679; 禁用</span>';
+            }
+            showToast(d.enabled ? '已启用' : '已禁用', 'success');
+        }
+    })
+    .catch(function(){ showToast('操作失败','error'); });
 }
 </script>
 {% endblock %}

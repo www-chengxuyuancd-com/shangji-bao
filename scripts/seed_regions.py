@@ -1,5 +1,8 @@
 """
-初始化行政区划数据：四川省 > 内江市 > 各区县 > 街道/镇 > 村/社区。
+初始化行政区划数据。
+
+1. 导入全国省市区县数据（从 pca-code.json），默认 enabled=false
+2. 导入四川省 > 内江市详细的镇/街道/村/社区数据，默认 enabled=true
 
 幂等脚本，重复运行不会产生重复数据。
 在 Docker 启动时自动执行。
@@ -7,19 +10,20 @@
 用法:
     uv run python scripts/seed_regions.py
 """
+import json
+import os
+
 from src.db.prisma_client import get_prisma, close_prisma
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PCA_JSON_PATH = os.path.join(SCRIPT_DIR, "pca-code.json")
 
 NEIJIANG_DATA = {
     "市中区": {
         "streets": ["城东街道", "城西街道", "玉溪街道", "牌楼街道", "乐贤街道"],
         "towns": {
-            "白马镇": {},
-            "史家镇": {},
-            "凌家镇": {},
-            "朝阳镇": {},
-            "永安镇": {},
-            "全安镇": {},
-            "龙门镇": {},
+            "白马镇": {}, "史家镇": {}, "凌家镇": {}, "朝阳镇": {},
+            "永安镇": {}, "全安镇": {}, "龙门镇": {},
         },
     },
     "东兴区": {
@@ -84,7 +88,7 @@ NEIJIANG_DATA = {
 }
 
 
-def _upsert(prisma, name, level, parent_id=None):
+def _upsert(prisma, name, level, parent_id=None, code=None, enabled=True):
     """创建或更新一条地区记录，返回该记录。"""
     where_filter = {"name": name, "parentId": parent_id}
     if parent_id is None:
@@ -92,40 +96,96 @@ def _upsert(prisma, name, level, parent_id=None):
     existing = prisma.searchregion.find_first(where=where_filter)
     if existing:
         return existing
-    data = {"name": name, "level": level}
+    data = {"name": name, "level": level, "enabled": enabled}
     if parent_id is not None:
         data["parentId"] = parent_id
+    if code:
+        data["code"] = code
     return prisma.searchregion.create(data=data)
+
+
+def _seed_national(prisma):
+    """导入全国省市区县数据（默认 enabled=false）。"""
+    if not os.path.exists(PCA_JSON_PATH):
+        print(f"  [跳过] 全国数据文件不存在: {PCA_JSON_PATH}")
+        return
+
+    with open(PCA_JSON_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+
+    p_count, c_count, d_count = 0, 0, 0
+
+    for prov in data:
+        province = _upsert(prisma, prov["name"], "province", code=prov.get("code"), enabled=False)
+        p_count += 1
+
+        for city_data in prov.get("children", []):
+            city_name = city_data["name"]
+            if city_name == "市辖区":
+                for dist_data in city_data.get("children", []):
+                    _upsert(prisma, dist_data["name"], "district", province.id, code=dist_data.get("code"), enabled=False)
+                    d_count += 1
+                continue
+
+            city = _upsert(prisma, city_name, "city", province.id, code=city_data.get("code"), enabled=False)
+            c_count += 1
+
+            for dist_data in city_data.get("children", []):
+                _upsert(prisma, dist_data["name"], "district", city.id, code=dist_data.get("code"), enabled=False)
+                d_count += 1
+
+    print(f"  全国数据: 省 {p_count}, 市 {c_count}, 区县 {d_count}")
+
+
+def _seed_neijiang(prisma):
+    """导入四川省内江市详细数据（默认 enabled=true）。"""
+    province = prisma.searchregion.find_first(where={"name": "四川省", "parentId": None})
+    if not province:
+        province = _upsert(prisma, "四川省", "province", enabled=True)
+    else:
+        prisma.searchregion.update(where={"id": province.id}, data={"enabled": True})
+    print(f"  省: {province.name} (id={province.id})")
+
+    city = prisma.searchregion.find_first(where={"name": "内江市", "parentId": province.id})
+    if not city:
+        city = _upsert(prisma, "内江市", "city", province.id, enabled=True)
+    else:
+        prisma.searchregion.update(where={"id": city.id}, data={"enabled": True})
+    print(f"    市: {city.name} (id={city.id})")
+
+    for district_name, children in NEIJIANG_DATA.items():
+        district = prisma.searchregion.find_first(where={"name": district_name, "parentId": city.id})
+        if not district:
+            district = _upsert(prisma, district_name, "district", city.id, enabled=True)
+        else:
+            prisma.searchregion.update(where={"id": district.id}, data={"enabled": True})
+        print(f"      区/县: {district.name} (id={district.id})")
+
+        for street_name in children.get("streets", []):
+            s = _upsert(prisma, street_name, "street", district.id, enabled=True)
+            print(f"        街道: {s.name}")
+
+        for town_name, town_data in children.get("towns", {}).items():
+            t = _upsert(prisma, town_name, "town", district.id, enabled=True)
+            print(f"        镇: {t.name} (id={t.id})")
+
+            for village_name in town_data.get("villages", []):
+                v = _upsert(prisma, village_name, "village", t.id, enabled=True)
+                print(f"          村: {v.name}")
+
+            for comm_name in town_data.get("communities", []):
+                c = _upsert(prisma, comm_name, "community", t.id, enabled=True)
+                print(f"          社区: {c.name}")
 
 
 def main():
     prisma = get_prisma()
 
-    province = _upsert(prisma, "四川省", "province")
-    print(f"省: {province.name} (id={province.id})")
+    print("导入全国省市区县数据...")
+    _seed_national(prisma)
 
-    city = _upsert(prisma, "内江市", "city", province.id)
-    print(f"  市: {city.name} (id={city.id})")
-
-    for district_name, children in NEIJIANG_DATA.items():
-        district = _upsert(prisma, district_name, "district", city.id)
-        print(f"    区/县: {district.name} (id={district.id})")
-
-        for street_name in children.get("streets", []):
-            s = _upsert(prisma, street_name, "street", district.id)
-            print(f"      街道: {s.name}")
-
-        for town_name, town_data in children.get("towns", {}).items():
-            t = _upsert(prisma, town_name, "town", district.id)
-            print(f"      镇: {t.name} (id={t.id})")
-
-            for village_name in town_data.get("villages", []):
-                v = _upsert(prisma, village_name, "village", t.id)
-                print(f"        村: {v.name}")
-
-            for comm_name in town_data.get("communities", []):
-                c = _upsert(prisma, comm_name, "community", t.id)
-                print(f"        社区: {c.name}")
+    print("\n导入内江市详细数据（启用）...")
+    _seed_neijiang(prisma)
 
     close_prisma()
     print("\n行政区划数据导入完成！")

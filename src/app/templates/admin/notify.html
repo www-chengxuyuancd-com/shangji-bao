@@ -340,6 +340,7 @@
                 <td style="font-size:11px; white-space:nowrap;">{{ m.publishDate|cst_time('%Y-%m-%d') if m.publishDate else '-' }}</td>
                 <td style="font-size:11px; color:#999;">
                     {% if m.skipReason == 'manual' %}<span style="color:#722ed1;">手动跳过</span>
+                    {% elif m.skipReason and m.skipReason.startswith('region:') %}<span style="color:#faad14;" title="该地区未启用">地区排除: {{ m.skipReason[7:] }}</span>
                     {% elif m.skipReason == 'region' %}<span style="color:#faad14;">地区不匹配</span>
                     {% elif m.skipReason == 'type' %}<span style="color:#faad14;">类型排除</span>
                     {% elif m.skipReason == 'blacklist' %}<span style="color:#ff4d4f;">标题黑名单</span>

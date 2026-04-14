@@ -116,34 +116,102 @@ def regions():
     LEVEL_LABELS = {"province": "省", "city": "市", "district": "区/县", "street": "街道", "town": "镇", "village": "村", "community": "社区"}
 
     by_parent = {}
-    by_id = {}
+    child_count = {}
     for r in all_regions:
-        by_id[r.id] = r
         pid = r.parentId or 0
         by_parent.setdefault(pid, []).append(r)
+        child_count[r.id] = child_count.get(r.id, 0)
+        if r.parentId:
+            child_count[r.parentId] = child_count.get(r.parentId, 0) + 1
 
-    def build_tree(parent_id=0):
-        nodes = []
-        for r in by_parent.get(parent_id, []):
-            children = build_tree(r.id)
-            nodes.append({
-                "id": int(r.id),
-                "name": r.name,
-                "code": r.code,
-                "level": r.level,
-                "level_label": LEVEL_LABELS.get(r.level, r.level),
-                "enabled": r.enabled,
-                "parentId": int(r.parentId) if r.parentId else None,
-                "children": children,
-            })
-        return nodes
-
-    roots = build_tree(0)
+    roots = []
+    for r in by_parent.get(0, []):
+        roots.append({
+            "id": int(r.id),
+            "name": r.name,
+            "code": r.code,
+            "level": r.level,
+            "level_label": LEVEL_LABELS.get(r.level, r.level),
+            "enabled": r.enabled,
+            "child_count": child_count.get(r.id, 0),
+        })
 
     total = len(all_regions)
     enabled = sum(1 for r in all_regions if r.enabled)
 
     return render_template("admin/regions.html", tree=roots, total=total, enabled=enabled, level_labels=LEVEL_LABELS)
+
+
+@admin_bp.route("/regions/children/<int:parent_id>", methods=["GET"])
+@login_required
+def region_children(parent_id):
+    """AJAX 接口：获取某节点的直接子节点。"""
+    prisma = get_prisma()
+    LEVEL_LABELS = {"province": "省", "city": "市", "district": "区/县", "street": "街道", "town": "镇", "village": "村", "community": "社区"}
+
+    children = prisma.searchregion.find_many(
+        where={"parentId": parent_id},
+        order={"id": "asc"},
+    )
+
+    all_regions = prisma.searchregion.find_many(order={"id": "asc"})
+    child_count = {}
+    for r in all_regions:
+        if r.parentId:
+            child_count[r.parentId] = child_count.get(r.parentId, 0) + 1
+
+    result = []
+    for r in children:
+        result.append({
+            "id": int(r.id),
+            "name": r.name,
+            "code": r.code,
+            "level": r.level,
+            "level_label": LEVEL_LABELS.get(r.level, r.level),
+            "enabled": r.enabled,
+            "child_count": child_count.get(r.id, 0),
+        })
+    return jsonify(result)
+
+
+@admin_bp.route("/regions/search", methods=["GET"])
+@login_required
+def region_search():
+    """AJAX 接口：按名称搜索区域，返回匹配结果及其完整路径。"""
+    q = request.args.get("q", "").strip()
+    if not q or len(q) < 2:
+        return jsonify([])
+
+    prisma = get_prisma()
+    LEVEL_LABELS = {"province": "省", "city": "市", "district": "区/县", "street": "街道", "town": "镇", "village": "村", "community": "社区"}
+
+    matches = prisma.searchregion.find_many(
+        where={"name": {"contains": q}},
+        take=50,
+        order={"id": "asc"},
+    )
+
+    all_regions = prisma.searchregion.find_many()
+    by_id = {r.id: r for r in all_regions}
+
+    results = []
+    for r in matches:
+        path_parts = []
+        cur = r
+        while cur.parentId and cur.parentId in by_id:
+            cur = by_id[cur.parentId]
+            path_parts.insert(0, cur.name)
+        path_parts.append(r.name)
+
+        results.append({
+            "id": int(r.id),
+            "name": r.name,
+            "level": r.level,
+            "level_label": LEVEL_LABELS.get(r.level, r.level),
+            "enabled": r.enabled,
+            "path": " > ".join(path_parts),
+        })
+    return jsonify(results)
 
 
 @admin_bp.route("/regions/add", methods=["POST"])
