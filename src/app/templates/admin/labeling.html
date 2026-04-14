@@ -12,17 +12,47 @@
             &nbsp;|&nbsp; 相关 <strong style="color:#52c41a;">{{ relevant_count }}</strong>
             &nbsp;|&nbsp; 不相关 <strong style="color:#ff4d4f;">{{ irrelevant_count }}</strong>
             &nbsp;|&nbsp; <span style="color:#722ed1;">🤖 AI {{ ai_count }}</span>
+            &nbsp;|&nbsp;
+            {% if bert_model_exists %}
+            <span style="color:#1890ff;" title="准确率: {{ bert_meta.val_accuracy if bert_meta else '?' }}&#10;训练样本: {{ bert_meta.samples if bert_meta else '?' }}">🧠 BERT ✔</span>
+            {% else %}
+            <span style="color:#ccc;">🧠 BERT 未训练</span>
+            {% endif %}
+            &nbsp;
+            {% if notice_model_exists %}
+            <span style="color:#13c2c2;" title="准确率: {{ notice_meta.val_accuracy if notice_meta else '?' }}&#10;训练样本: {{ notice_meta.samples if notice_meta else '?' }}">📋 公告类型 ✔</span>
+            {% else %}
+            <span style="color:#ccc;">📋 公告类型 未训练</span>
+            {% endif %}
         </span>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
             <form method="post" action="{{ url_for('admin.labeling_import') }}" style="display:inline;">
                 <button type="submit" class="btn btn-ghost btn-sm" onclick="return confirm('从解析结果中导入尚未导入的记录？')">从解析结果导入</button>
             </form>
             <form method="post" action="{{ url_for('admin.labeling_train') }}" style="display:inline;">
-                <button type="submit" class="btn btn-primary btn-sm"
+                <button type="submit" class="btn btn-sm {{ 'btn-ghost' if labeled_count < 50 else 'btn-primary' }}"
                         {{ 'disabled' if labeled_count < 50 else '' }}
-                        onclick="return confirm('确定用 {{ labeled_count }} 条已标注样本训练模型？')"
-                        title="{{ '至少需要 50 条已标注样本' if labeled_count < 50 else '' }}">
-                    训练模型{{ ' (' + labeled_count|string + '/50)' if labeled_count < 50 else '' }}
+                        onclick="return confirm('用 {{ labeled_count }} 条样本训练 FastText 模型？')"
+                        title="{{ '至少需要 50 条已标注样本' if labeled_count < 50 else '训练 FastText 轻量模型' }}">
+                    FastText{{ ' (' + labeled_count|string + '/50)' if labeled_count < 50 else '' }}
+                </button>
+            </form>
+            <form method="post" action="{{ url_for('admin.labeling_train_bert') }}" style="display:inline;">
+                <button type="submit" class="btn btn-sm"
+                        style="background:#1890ff; color:#fff; border-color:#1890ff;"
+                        {{ 'disabled' if labeled_count < 20 else '' }}
+                        onclick="return confirm('用 {{ labeled_count }} 条样本训练 BERT 模型？训练时间较长，请耐心等待。')"
+                        title="{{ '至少需要 20 条已标注样本' if labeled_count < 20 else '训练 BERT 深度语义模型（输出 0~1 分数）' }}">
+                    🧠 BERT{{ ' (' + labeled_count|string + '/20)' if labeled_count < 20 else '' }}
+                </button>
+            </form>
+            <form method="post" action="{{ url_for('admin.labeling_train_notice') }}" style="display:inline;">
+                <button type="submit" class="btn btn-sm"
+                        style="background:#13c2c2; color:#fff; border-color:#13c2c2;"
+                        {{ 'disabled' if notice_type_count < 20 else '' }}
+                        onclick="return confirm('用 {{ notice_type_count }} 条已有公告类型数据训练分类模型？')"
+                        title="{{ '至少需要 20 条有公告类型的解析数据' if notice_type_count < 20 else '训练公告类型多分类模型' }}">
+                    📋 公告类型{{ ' (' + notice_type_count|string + '/20)' if notice_type_count < 20 else '' }}
                 </button>
             </form>
         </div>

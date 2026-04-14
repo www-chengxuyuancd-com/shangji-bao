@@ -1100,14 +1100,40 @@ def labeling_list():
     ai_count = prisma.labeledsample.count(where={"labeledBy": "ai"})
 
     import os
-    model_exists = os.path.exists(
-        os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "classifier", "..", "..", "data", "models", "relevance_model.bin"))
-    )
+    model_exists = False
     try:
         from src.classifier.trainer import MODEL_PATH
         model_exists = os.path.exists(MODEL_PATH)
     except Exception:
         pass
+
+    bert_model_exists = False
+    bert_meta = None
+    try:
+        from src.classifier.bert_trainer import BERT_MODEL_DIR
+        import json
+        meta_path = os.path.join(BERT_MODEL_DIR, "meta.json")
+        if os.path.exists(meta_path):
+            bert_model_exists = True
+            with open(meta_path) as f:
+                bert_meta = json.load(f)
+    except Exception:
+        pass
+
+    notice_model_exists = False
+    notice_meta = None
+    try:
+        from src.classifier.notice_trainer import NOTICE_MODEL_DIR
+        import json
+        meta_path = os.path.join(NOTICE_MODEL_DIR, "meta.json")
+        if os.path.exists(meta_path):
+            notice_model_exists = True
+            with open(meta_path) as f:
+                notice_meta = json.load(f)
+    except Exception:
+        pass
+
+    notice_type_count = prisma.parsedresult.count(where={"noticeType": {"not": None}})
 
     return render_template(
         "admin/labeling.html",
@@ -1128,6 +1154,11 @@ def labeling_list():
         ai_count=ai_count,
         per_page=per_page,
         model_exists=model_exists,
+        bert_model_exists=bert_model_exists,
+        bert_meta=bert_meta,
+        notice_model_exists=notice_model_exists,
+        notice_meta=notice_meta,
+        notice_type_count=notice_type_count,
     )
 
 
@@ -1275,12 +1306,49 @@ def labeling_train():
     result = train_model(prisma)
     if result.get("success"):
         flash(
-            f"模型训练完成！样本 {result['samples']} 条（相关 {result['relevant']} / 不相关 {result['irrelevant']}），"
+            f"FastText 模型训练完成！样本 {result['samples']} 条（相关 {result['relevant']} / 不相关 {result['irrelevant']}），"
             f"精确率 {result['precision']}，召回率 {result['recall']}",
             "success",
         )
     else:
         flash(f"训练失败: {result.get('error', '未知错误')}", "error")
+    return redirect(url_for("admin.labeling_list"))
+
+
+@admin_bp.route("/labeling/train-bert", methods=["POST"])
+@login_required
+def labeling_train_bert():
+    from src.classifier.bert_trainer import train_bert_model
+    prisma = get_prisma()
+    result = train_bert_model(prisma)
+    if result.get("success"):
+        flash(
+            f"BERT 相关性模型训练完成！样本 {result['samples']} 条"
+            f"（相关 {result['relevant']} / 不相关 {result['irrelevant']}），"
+            f"验证准确率 {result['val_accuracy']}",
+            "success",
+        )
+    else:
+        flash(f"BERT 训练失败: {result.get('error', '未知错误')}", "error")
+    return redirect(url_for("admin.labeling_list"))
+
+
+@admin_bp.route("/labeling/train-notice", methods=["POST"])
+@login_required
+def labeling_train_notice():
+    from src.classifier.notice_trainer import train_notice_model
+    prisma = get_prisma()
+    result = train_notice_model(prisma)
+    if result.get("success"):
+        dist = result.get("label_distribution", {})
+        dist_str = ", ".join(f"{k}:{v}" for k, v in dist.items())
+        flash(
+            f"公告类型模型训练完成！样本 {result['samples']} 条（{dist_str}），"
+            f"验证准确率 {result['val_accuracy']}",
+            "success",
+        )
+    else:
+        flash(f"公告类型训练失败: {result.get('error', '未知错误')}", "error")
     return redirect(url_for("admin.labeling_list"))
 
 

@@ -53,6 +53,9 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/shangjibao
       MONGO_URI: mongodb://mongodb:mongodb@mongodb:27017/shangjibao?authSource=admin
       MODEL_DIR: /app/data/models
+      HF_MIRROR: https://hf-mirror.com
+      HF_ENDPOINT: https://hf-mirror.com
+      TRANSFORMERS_CACHE: /app/data/models/hf_cache
     volumes:
       - model_data:/app/data/models
     depends_on:
@@ -64,7 +67,7 @@ services:
       sh -c "uv run prisma generate &&
              uv run prisma db push --skip-generate --accept-data-loss &&
              uv run python scripts/seed_regions.py &&
-             uv run gunicorn -w 4 -t 120 -b 0.0.0.0:5000 'src.app:create_app()'"
+             uv run gunicorn -w 4 -t 600 -b 0.0.0.0:5000 'src.app:create_app()'"
 
 volumes:
   pgdata:

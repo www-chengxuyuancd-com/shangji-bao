@@ -11,7 +11,9 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 
-RUN uv sync --no-dev --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# torch CPU 版从官方镜像安装（体积更小），其余依赖走清华源
+RUN uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu && \
+    uv sync --no-dev --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY prisma ./prisma
 RUN uv run prisma generate

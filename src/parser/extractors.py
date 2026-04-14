@@ -373,13 +373,23 @@ NOTICE_TYPES = [
 
 
 class NoticeTypeExtractor(FieldExtractor):
-    """通过标题和正文关键词匹配识别公告类型。"""
+    """BERT 模型优先，降级到正则规则匹配识别公告类型。"""
     name = "rule_notice_type"
 
     def extract(self, text: str, html: str, context: dict) -> str | None:
         title = context.get("title", "") or ""
-        check_text = title + " " + text[:1500]
 
+        try:
+            from src.classifier.notice_predictor import NoticeTypePredictor
+            predictor = NoticeTypePredictor.get_instance()
+            if predictor.available:
+                pred = predictor.predict(text, title=title)
+                if pred and pred["confidence"] > 0.6:
+                    return pred["type"]
+        except Exception:
+            pass
+
+        check_text = title + " " + text[:1500]
         for type_name, patterns in NOTICE_TYPES:
             for pat in patterns:
                 if pat.search(check_text):
@@ -391,13 +401,14 @@ class NoticeTypeExtractor(FieldExtractor):
 
 class RelevanceExtractor(FieldExtractor):
     """
-    关键词匹配 + FastText 模型（如果可用）综合判断相关性。
-    模型 confidence > 0.7 时以模型结果为主，否则降级到关键词匹配。
+    多级降级相关性判断：BERT > FastText > 关键词匹配。
+    BERT 输出 0~1 连续分数，可配合阈值使用。
     """
     name = "rule_relevance"
 
     def extract(self, text: str, html: str, context: dict) -> dict:
         keywords = context.get("user_keywords", [])
+        threshold = context.get("relevance_threshold", 0.5)
 
         text_lower = text.lower()
         matched = []
@@ -406,6 +417,30 @@ class RelevanceExtractor(FieldExtractor):
                 matched.append(kw)
         kw_score = len(matched) / len(keywords) if keywords else 0
         kw_relevant = kw_score > 0
+
+        bert_score = None
+        try:
+            from src.classifier.bert_predictor import BertRelevancePredictor
+            predictor = BertRelevancePredictor.get_instance()
+            if predictor.available:
+                title = context.get("title", "")
+                pred = predictor.predict(text, title=title)
+                if pred:
+                    bert_score = pred["score"]
+        except Exception:
+            pass
+
+        if bert_score is not None:
+            is_relevant = bert_score >= threshold
+            final_score = bert_score
+            return {
+                "is_relevant": is_relevant,
+                "score": round(final_score, 4),
+                "matched": ",".join(matched),
+                "ml_label": "relevant" if is_relevant else "irrelevant",
+                "ml_confidence": round(bert_score, 4),
+                "model_type": "bert",
+            }
 
         ml_label = None
         ml_confidence = None
@@ -437,4 +472,5 @@ class RelevanceExtractor(FieldExtractor):
             "matched": ",".join(matched),
             "ml_label": ml_label,
             "ml_confidence": ml_confidence,
+            "model_type": "fasttext" if ml_label else "keyword",
         }
