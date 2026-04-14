@@ -44,6 +44,16 @@
                 <input type="hidden" name="weekdays" id="weekdaysInput">
             </div>
         </div>
+        <div style="display:flex; gap:24px; margin-bottom:12px; padding:10px 12px; background:#f6ffed; border:1px solid #b7eb8f; border-radius:4px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+                <input type="checkbox" name="auto_parse" checked> 爬完自动解析
+                <span style="color:#999; font-size:11px;">（爬虫完成后自动解析原始页面）</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+                <input type="checkbox" name="auto_notify" checked> 解析后自动发送
+                <span style="color:#999; font-size:11px;">（解析完成后自动推送通知到渠道）</span>
+            </label>
+        </div>
         <button type="submit" class="btn btn-primary" onclick="collectWeekdays()">添加</button>
     </form>
 </div>
@@ -59,6 +69,7 @@
                 <th>名称</th>
                 <th>调度类型</th>
                 <th>执行时间</th>
+                <th>自动化</th>
                 <th>状态</th>
                 <th>操作</th>
             </tr>
@@ -88,6 +99,11 @@
                         {% for d in s.weekdays.split(',') %}{{ day_map.get(d.strip(), d) }}{{ '、' if not loop.last }}{% endfor %}
                     </span>
                     {% endif %}
+                </td>
+                <td style="font-size:12px;">
+                    {% if s.autoParse %}<span style="color:#52c41a;">✔ 解析</span>{% else %}<span style="color:#ccc;">✘ 解析</span>{% endif %}
+                    &nbsp;
+                    {% if s.autoNotify %}<span style="color:#1890ff;">✔ 通知</span>{% else %}<span style="color:#ccc;">✘ 通知</span>{% endif %}
                 </td>
                 <td>
                     {% if s.enabled %}

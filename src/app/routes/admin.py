@@ -598,6 +598,8 @@ def schedule_add():
     start_hour = int(request.form.get("start_hour", "2") or "2")
     start_minute = int(request.form.get("start_minute", "0") or "0")
     weekdays = request.form.get("weekdays", "").strip() or None
+    auto_parse = request.form.get("auto_parse") == "on"
+    auto_notify = request.form.get("auto_notify") == "on"
 
     if name:
         prisma = get_prisma()
@@ -608,6 +610,8 @@ def schedule_add():
             "startHour": start_hour,
             "startMinute": start_minute,
             "weekdays": weekdays,
+            "autoParse": auto_parse,
+            "autoNotify": auto_notify,
         })
         flash("调度配置添加成功", "success")
         _reload_schedules()

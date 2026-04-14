@@ -331,6 +331,9 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
             },
         )
 
+        if job.triggerType == "scheduled":
+            _auto_pipeline_after_crawl(prisma)
+
     except Exception as e:
         logger.error("Crawl job %d failed: %s", job_id, e)
         prisma.crawljob.update(
@@ -566,3 +569,61 @@ def resume_crawl_job(job_id: int) -> int:
     process.start()
 
     return job_id
+
+
+def _auto_pipeline_after_crawl(prisma):
+    """爬虫完成后的自动化流水线：解析 → 发送通知。根据调度配置决定。"""
+    schedule = prisma.crawlschedule.find_first(where={"enabled": True})
+    if not schedule:
+        return
+
+    auto_parse = getattr(schedule, "autoParse", True)
+    auto_notify = getattr(schedule, "autoNotify", True)
+
+    if not auto_parse:
+        logger.info("Auto-parse disabled, skipping pipeline")
+        return
+
+    logger.info("Auto-pipeline: starting parse after crawl")
+    try:
+        from src.parser.engine import _run_parse_job
+        parse_job = prisma.crawljob.create(data={
+            "status": "pending",
+            "triggerType": "auto_parse",
+        })
+        _run_parse_in_process(parse_job.id, auto_notify)
+    except Exception as e:
+        logger.error("Auto-pipeline parse failed: %s", e)
+
+
+def _run_parse_in_process(parse_job_id: int, auto_notify: bool):
+    """在新进程中执行解析，完成后根据配置自动发送通知。"""
+    process = multiprocessing.Process(
+        target=_auto_parse_and_notify,
+        args=(parse_job_id, auto_notify),
+        daemon=True,
+    )
+    process.start()
+
+
+def _auto_parse_and_notify(parse_job_id: int, auto_notify: bool):
+    """解析 + 通知的完整流水线（在子进程中执行）。"""
+    from src.parser.engine import _run_parse_job
+
+    _run_parse_job(parse_job_id)
+
+    if not auto_notify:
+        logger.info("Auto-notify disabled, skipping send")
+        return
+
+    logger.info("Auto-pipeline: sending notifications after parse")
+    try:
+        from src.notify.engine import send_notifications
+        result = send_notifications()
+        logger.info(
+            "Auto-notify done: sent=%d, prepared=%d, skipped=%d, failed=%d",
+            result.get("sent", 0), result.get("prepared", 0),
+            result.get("skipped", 0), result.get("failed", 0),
+        )
+    except Exception as e:
+        logger.error("Auto-pipeline notify failed: %s", e)

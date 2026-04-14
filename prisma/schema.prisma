@@ -85,6 +85,8 @@ model CrawlSchedule {
   startMinute  Int      @default(0) @map("start_minute") // 0-59
   weekdays     String?  @db.VarChar(50) // 逗号分隔: 0=周一..6=周日, 如 "0,2,4"
   enabled      Boolean  @default(true)
+  autoParse    Boolean  @default(true)  @map("auto_parse")  // 爬虫完成后自动解析
+  autoNotify   Boolean  @default(true)  @map("auto_notify") // 解析完成后自动发送通知
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
