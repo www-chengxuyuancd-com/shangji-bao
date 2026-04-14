@@ -208,12 +208,20 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
         SUB_LEVELS = {"street", "town", "village", "community"}
 
         def _region_search_name(region):
-            """村/镇/社区/街道级别自动拼上上级区/县名"""
-            if region.level in SUB_LEVELS and region.parentId:
-                parent = region_by_id.get(region.parentId)
-                if parent:
-                    return parent.name + " " + region.name
-            return region.name
+            """村/镇/社区/街道级别自动向上拼接到区/县"""
+            if region.level not in SUB_LEVELS:
+                return region.name
+            parts = [region.name]
+            cur = region
+            while cur.parentId:
+                parent = region_by_id.get(cur.parentId)
+                if not parent:
+                    break
+                parts.insert(0, parent.name)
+                if parent.level == "district":
+                    break
+                cur = parent
+            return " ".join(parts)
 
         query_combos = []
         for source in sources:
