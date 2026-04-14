@@ -18,6 +18,13 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
+# 禁用 transformers 自动 safetensors 转换检查（hf-mirror 不支持 discussions API）
+try:
+    import transformers.safetensors_conversion as _sc
+    _sc.auto_conversion = lambda *a, **kw: None
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "data", "models"))
