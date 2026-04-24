@@ -52,13 +52,15 @@ def create_app():
         try:
             from src.scheduler.runner import fix_orphaned_jobs
             fix_orphaned_jobs()
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Failed to fix orphaned jobs: %s", e, exc_info=True)
         try:
             from src.scheduler.scheduler import start_scheduler
             start_scheduler()
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Failed to start scheduler: %s", e, exc_info=True)
 
     @app.teardown_appcontext
     def shutdown_db(exception=None):

@@ -9,7 +9,6 @@ from datetime import timezone, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from prisma import Prisma
 
 from src.scheduler.runner import start_crawl_job
 
@@ -50,30 +49,41 @@ def sync_schedules():
         if job.id.startswith("crawl_schedule_"):
             scheduler.remove_job(job.id)
 
-    prisma = Prisma()
-    prisma.connect()
-    schedules = prisma.crawlschedule.find_many(where={"enabled": True})
-    prisma.disconnect()
+    try:
+        from src.db.prisma_client import get_prisma as _get_app_prisma
+        prisma = _get_app_prisma()
+        schedules = prisma.crawlschedule.find_many(where={"enabled": True})
+    except Exception as e:
+        logger.error("sync_schedules: DB query failed: %s", e, exc_info=True)
+        return
 
     if not schedules:
         logger.info("No enabled schedules found")
         return
 
+    logger.info("sync_schedules: found %d enabled schedules", len(schedules))
     for sched in schedules:
         job_id = f"crawl_schedule_{sched.id}"
-        trigger = _build_trigger(sched)
-        if trigger:
-            scheduler.add_job(
-                _make_scheduled_crawl(int(sched.id)),
-                trigger=trigger,
-                id=job_id,
-                replace_existing=True,
-            )
-            job = scheduler.get_job(job_id)
-            next_time = (getattr(job, "next_run_time", None) or getattr(job, "next_fire_time", None)) if job else None
-            next_run = next_time.strftime("%Y-%m-%d %H:%M CST") if next_time else "未知"
-            logger.info("Schedule synced: [%s] %s (%s), next_run=%s",
-                        sched.id, sched.name, sched.scheduleType, next_run)
+        try:
+            trigger = _build_trigger(sched)
+            if trigger:
+                scheduler.add_job(
+                    _make_scheduled_crawl(int(sched.id)),
+                    trigger=trigger,
+                    id=job_id,
+                    replace_existing=True,
+                )
+                job = scheduler.get_job(job_id)
+                next_time = (getattr(job, "next_run_time", None) or getattr(job, "next_fire_time", None)) if job else None
+                next_run = next_time.strftime("%Y-%m-%d %H:%M CST") if next_time else "未知"
+                logger.info("Schedule synced: [%s] %s (%s), next_run=%s",
+                            sched.id, sched.name, sched.scheduleType, next_run)
+            else:
+                logger.warning("Schedule [%s] %s: trigger build returned None (type=%s)",
+                               sched.id, sched.name, sched.scheduleType)
+        except Exception as e:
+            logger.error("Schedule [%s] %s: failed to add job: %s",
+                         sched.id, sched.name, e, exc_info=True)
 
 
 def _build_trigger(sched):
