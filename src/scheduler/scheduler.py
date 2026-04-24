@@ -2,8 +2,10 @@
 APScheduler 调度管理。
 
 从数据库读取 CrawlSchedule 配置，自动创建/更新定时任务。
+使用 Asia/Shanghai (CST) 时区。
 """
 import logging
+from datetime import timezone, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -13,24 +15,31 @@ from src.scheduler.runner import start_crawl_job
 
 logger = logging.getLogger(__name__)
 
+CST_TZ = "Asia/Shanghai"
+CST = timezone(timedelta(hours=8))
+
 _scheduler: BackgroundScheduler | None = None
 
 
 def get_scheduler() -> BackgroundScheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = BackgroundScheduler()
+        _scheduler = BackgroundScheduler(timezone=CST_TZ)
     return _scheduler
 
 
-def _scheduled_crawl():
-    """由调度器触发的抓取任务。"""
-    logger.info("Scheduled crawl triggered")
-    try:
-        job_id = start_crawl_job(trigger_type="scheduled")
-        logger.info("Scheduled crawl job created: %d", job_id)
-    except Exception as e:
-        logger.error("Failed to start scheduled crawl: %s", e)
+def _make_scheduled_crawl(schedule_id: int):
+    """生成绑定了 schedule_id 的回调函数。"""
+    def _do():
+        from datetime import datetime
+        now = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S CST")
+        logger.info("=== Scheduled crawl triggered at %s (schedule_id=%s) ===", now, schedule_id)
+        try:
+            job_id = start_crawl_job(trigger_type="scheduled", schedule_id=schedule_id)
+            logger.info("Scheduled crawl job created: %d", job_id)
+        except Exception as e:
+            logger.error("Failed to start scheduled crawl: %s", e)
+    return _do
 
 
 def sync_schedules():
@@ -46,47 +55,54 @@ def sync_schedules():
     schedules = prisma.crawlschedule.find_many(where={"enabled": True})
     prisma.disconnect()
 
+    if not schedules:
+        logger.info("No enabled schedules found")
+        return
+
     for sched in schedules:
         job_id = f"crawl_schedule_{sched.id}"
         trigger = _build_trigger(sched)
         if trigger:
             scheduler.add_job(
-                _scheduled_crawl,
+                _make_scheduled_crawl(int(sched.id)),
                 trigger=trigger,
                 id=job_id,
                 replace_existing=True,
             )
-            logger.info("Schedule synced: %s (%s)", sched.name, sched.scheduleType)
+            job = scheduler.get_job(job_id)
+            next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M CST") if job and job.next_run_time else "未知"
+            logger.info("Schedule synced: [%s] %s (%s), next_run=%s",
+                        sched.id, sched.name, sched.scheduleType, next_run)
 
 
 def _build_trigger(sched):
-    """根据 CrawlSchedule 构建 CronTrigger。"""
+    """根据 CrawlSchedule 构建 CronTrigger（CST 时区）。"""
     hour = sched.startHour
     minute = sched.startMinute
 
     if sched.scheduleType == "daily":
         if sched.timesPerDay <= 1:
-            return CronTrigger(hour=hour, minute=minute)
+            return CronTrigger(hour=hour, minute=minute, timezone=CST_TZ)
         interval = 24 // sched.timesPerDay
         hours = ",".join(str((hour + i * interval) % 24) for i in range(sched.timesPerDay))
-        return CronTrigger(hour=hours, minute=minute)
+        return CronTrigger(hour=hours, minute=minute, timezone=CST_TZ)
 
     elif sched.scheduleType == "weekly":
         weekdays = sched.weekdays or "0"
         dow = _weekdays_to_cron(weekdays)
-        return CronTrigger(day_of_week=dow, hour=hour, minute=minute)
+        return CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=CST_TZ)
 
     elif sched.scheduleType == "multi_weekly":
         weekdays = sched.weekdays or "0,2,4"
         dow = _weekdays_to_cron(weekdays)
-        return CronTrigger(day_of_week=dow, hour=hour, minute=minute)
+        return CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=CST_TZ)
 
     elif sched.scheduleType == "multi_daily":
         if sched.timesPerDay <= 1:
-            return CronTrigger(hour=hour, minute=minute)
+            return CronTrigger(hour=hour, minute=minute, timezone=CST_TZ)
         interval = 24 // sched.timesPerDay
         hours = ",".join(str((hour + i * interval) % 24) for i in range(sched.timesPerDay))
-        return CronTrigger(hour=hours, minute=minute)
+        return CronTrigger(hour=hours, minute=minute, timezone=CST_TZ)
 
     logger.warning("Unknown schedule type: %s", sched.scheduleType)
     return None
@@ -102,13 +118,29 @@ def _weekdays_to_cron(weekdays_str: str) -> str:
     return ",".join(parts)
 
 
+def get_next_run_times() -> dict:
+    """获取所有调度任务的下次执行时间（供页面展示），key 为 schedule_id (int)。"""
+    scheduler = get_scheduler()
+    result = {}
+    for job in scheduler.get_jobs():
+        if job.id.startswith("crawl_schedule_"):
+            try:
+                sched_id = int(job.id.replace("crawl_schedule_", ""))
+            except ValueError:
+                continue
+            next_time = job.next_run_time
+            result[sched_id] = next_time.strftime("%Y-%m-%d %H:%M CST") if next_time else None
+    return result
+
+
 def start_scheduler():
-    """启动调度器。"""
+    """启动调度器。gunicorn 使用 -w 1 确保只有一个 worker。"""
+    import os
     scheduler = get_scheduler()
     if not scheduler.running:
         sync_schedules()
         scheduler.start()
-        logger.info("Scheduler started")
+        logger.info("Scheduler started in pid=%d, jobs=%d", os.getpid(), len(scheduler.get_jobs()))
 
 
 def stop_scheduler():

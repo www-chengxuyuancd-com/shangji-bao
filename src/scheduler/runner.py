@@ -332,7 +332,7 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
         )
 
         if job.triggerType == "scheduled":
-            _auto_pipeline_after_crawl(prisma)
+            _auto_pipeline_after_crawl(prisma, job.scheduleId)
 
     except Exception as e:
         logger.error("Crawl job %d failed: %s", job_id, e)
@@ -538,13 +538,13 @@ def _crawl_website(prisma, source, raw_pages, tracker):
         tracker.update(pages=1)
 
 
-def start_crawl_job(trigger_type: str = "manual") -> int:
+def start_crawl_job(trigger_type: str = "manual", schedule_id: int | None = None) -> int:
     prisma = Prisma()
     prisma.connect()
-    job = prisma.crawljob.create(data={
-        "status": "pending",
-        "triggerType": trigger_type,
-    })
+    data = {"status": "pending", "triggerType": trigger_type}
+    if schedule_id is not None:
+        data["scheduleId"] = schedule_id
+    job = prisma.crawljob.create(data=data)
     prisma.disconnect()
 
     process = multiprocessing.Process(target=_run_crawl_job, args=(job.id,), daemon=True)
@@ -571,22 +571,26 @@ def resume_crawl_job(job_id: int) -> int:
     return job_id
 
 
-def _auto_pipeline_after_crawl(prisma):
+def _auto_pipeline_after_crawl(prisma, schedule_id=None):
     """爬虫完成后的自动化流水线：解析 → 发送通知。根据调度配置决定。"""
-    schedule = prisma.crawlschedule.find_first(where={"enabled": True})
+    schedule = None
+    if schedule_id:
+        schedule = prisma.crawlschedule.find_unique(where={"id": schedule_id})
     if not schedule:
+        schedule = prisma.crawlschedule.find_first(where={"enabled": True})
+    if not schedule:
+        logger.info("No schedule config found, skipping auto-pipeline")
         return
 
     auto_parse = getattr(schedule, "autoParse", True)
     auto_notify = getattr(schedule, "autoNotify", True)
 
     if not auto_parse:
-        logger.info("Auto-parse disabled, skipping pipeline")
+        logger.info("Auto-parse disabled for schedule [%s], skipping pipeline", schedule.name)
         return
 
-    logger.info("Auto-pipeline: starting parse after crawl")
+    logger.info("Auto-pipeline: starting parse after crawl (schedule=%s)", schedule.name)
     try:
-        from src.parser.engine import _run_parse_job
         parse_job = prisma.crawljob.create(data={
             "status": "pending",
             "triggerType": "auto_parse",

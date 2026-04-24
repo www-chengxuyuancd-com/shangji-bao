@@ -586,7 +586,9 @@ def results():
 def schedules():
     prisma = get_prisma()
     items = prisma.crawlschedule.find_many(order={"id": "desc"})
-    return render_template("admin/schedules.html", schedules=items)
+    from src.scheduler.scheduler import get_next_run_times
+    next_runs = get_next_run_times()
+    return render_template("admin/schedules.html", schedules=items, next_runs=next_runs)
 
 
 @admin_bp.route("/schedules/add", methods=["POST"])

@@ -70,6 +70,7 @@
                 <th>调度类型</th>
                 <th>执行时间</th>
                 <th>自动化</th>
+                <th>下次执行</th>
                 <th>状态</th>
                 <th>操作</th>
             </tr>
@@ -104,6 +105,15 @@
                     {% if s.autoParse %}<span style="color:#52c41a;">✔ 解析</span>{% else %}<span style="color:#ccc;">✘ 解析</span>{% endif %}
                     &nbsp;
                     {% if s.autoNotify %}<span style="color:#1890ff;">✔ 通知</span>{% else %}<span style="color:#ccc;">✘ 通知</span>{% endif %}
+                </td>
+                <td style="font-size:12px; color:#666;">
+                    {% if s.enabled and next_runs.get(s.id) %}
+                    {{ next_runs[s.id] }}
+                    {% elif s.enabled %}
+                    <span style="color:#fa8c16;">未注册</span>
+                    {% else %}
+                    <span style="color:#ccc;">-</span>
+                    {% endif %}
                 </td>
                 <td>
                     {% if s.enabled %}

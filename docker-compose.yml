@@ -70,7 +70,7 @@ services:
       sh -c "uv run prisma generate &&
              uv run prisma db push --skip-generate --accept-data-loss &&
              uv run python scripts/seed_regions.py &&
-             uv run gunicorn -w 2 -t 600 -b 0.0.0.0:5000 'src.app:create_app()'"
+             uv run gunicorn -w 1 -t 600 -b 0.0.0.0:5000 'src.app:create_app()'"
 
 volumes:
   pgdata:

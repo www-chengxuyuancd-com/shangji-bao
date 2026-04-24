@@ -97,7 +97,8 @@ model CrawlSchedule {
 model CrawlJob {
   id            BigInt   @id @default(autoincrement())
   status        String   @default("pending") @db.VarChar(20) // pending, running, paused, completed, failed, cancelled, interrupted
-  triggerType   String   @default("manual") @map("trigger_type") @db.VarChar(20) // manual, scheduled, parse, relevance_rejudge
+  triggerType   String   @default("manual") @map("trigger_type") @db.VarChar(20) // manual, scheduled, parse, relevance_rejudge, auto_parse
+  scheduleId    BigInt?  @map("schedule_id")
   totalSources  Int      @default(0) @map("total_sources")
   doneSources   Int      @default(0) @map("done_sources")
   totalPages    Int      @default(0) @map("total_pages")
