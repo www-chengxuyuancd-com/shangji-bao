@@ -149,9 +149,14 @@ def start_scheduler():
     import os
     scheduler = get_scheduler()
     if not scheduler.running:
-        sync_schedules()
-        scheduler.start()
-        logger.info("Scheduler started in pid=%d, jobs=%d", os.getpid(), len(scheduler.get_jobs()))
+        try:
+            scheduler.start()
+            logger.info("Scheduler started in pid=%d", os.getpid())
+        except Exception as e:
+            logger.error("Scheduler start failed: %s", e, exc_info=True)
+            return
+    sync_schedules()
+    logger.info("Scheduler ready, jobs=%d", len(scheduler.get_jobs()))
 
 
 def stop_scheduler():

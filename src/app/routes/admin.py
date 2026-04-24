@@ -1608,7 +1608,11 @@ def llm_config_test():
 
 def _reload_schedules():
     try:
-        from src.scheduler.scheduler import sync_schedules
+        from src.scheduler.scheduler import get_scheduler, sync_schedules
+        scheduler = get_scheduler()
+        if not scheduler.running:
+            scheduler.start()
         sync_schedules()
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("_reload_schedules failed: %s", e, exc_info=True)
