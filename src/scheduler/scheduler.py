@@ -70,7 +70,8 @@ def sync_schedules():
                 replace_existing=True,
             )
             job = scheduler.get_job(job_id)
-            next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M CST") if job and job.next_run_time else "未知"
+            next_time = (getattr(job, "next_run_time", None) or getattr(job, "next_fire_time", None)) if job else None
+            next_run = next_time.strftime("%Y-%m-%d %H:%M CST") if next_time else "未知"
             logger.info("Schedule synced: [%s] %s (%s), next_run=%s",
                         sched.id, sched.name, sched.scheduleType, next_run)
 
@@ -128,7 +129,7 @@ def get_next_run_times() -> dict:
                 sched_id = int(job.id.replace("crawl_schedule_", ""))
             except ValueError:
                 continue
-            next_time = job.next_run_time
+            next_time = getattr(job, "next_run_time", None) or getattr(job, "next_fire_time", None)
             result[sched_id] = next_time.strftime("%Y-%m-%d %H:%M CST") if next_time else None
     return result
 

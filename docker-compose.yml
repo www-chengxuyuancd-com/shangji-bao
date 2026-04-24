@@ -38,6 +38,7 @@ services:
       - NAPCAT_GID=0
     ports:
       - "6099:6099"
+      - "3000:3000"
     volumes:
       - napcat_config:/app/.config/QQ
       - napcat_data:/app/napcat/config
