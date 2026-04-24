@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import timedelta, timezone
 
@@ -7,6 +8,12 @@ from flask import Flask
 from src.config import get_config
 from src.db.prisma_client import get_prisma, close_prisma
 from src.db.mongo import close_mongo
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 CST = timezone(timedelta(hours=8))
 
