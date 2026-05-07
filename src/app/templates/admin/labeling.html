@@ -60,6 +60,7 @@
         <input type="text" name="id" class="form-input" placeholder="ID" value="{{ id_q }}" style="width:70px; font-size:12px;">
         <input type="text" name="title" class="form-input" placeholder="标题搜索" value="{{ title_q }}" style="width:130px; font-size:12px;">
         <input type="text" name="sq" class="form-input" placeholder="搜索词" value="{{ sq }}" style="width:110px; font-size:12px;">
+        <input type="text" name="url" class="form-input" placeholder="URL（模糊）" value="{{ url_q }}" style="width:160px; font-size:12px;">
         <select name="label" class="form-input" style="width:90px; font-size:12px;">
             <option value="">标注</option>
             <option value="unlabeled" {{ 'selected' if label_filter == 'unlabeled' }}>未标注</option>
@@ -80,7 +81,7 @@
             <option value="500" {{ 'selected' if per_page == 500 }}>500条</option>
         </select>
         <button type="submit" class="btn btn-primary btn-sm" style="font-size:12px;">筛选</button>
-        {% if label_filter or sq or title_q or id_q or labeled_by or per_page != 20 %}
+        {% if label_filter or sq or title_q or url_q or id_q or labeled_by or per_page != 20 %}
         <a href="{{ url_for('admin.labeling_list') }}" class="btn btn-ghost btn-sm" style="font-size:12px;">清除</a>
         {% endif %}
         <span style="margin-left:auto; font-size:12px; color:#999;">共 {{ total }} 条</span>
@@ -166,7 +167,7 @@
     </table>
 
     {% if total_pages > 1 %}
-    {% set pq = {'label': label_filter, 'sq': sq, 'title': title_q, 'id': id_q, 'labeled_by': labeled_by, 'per_page': per_page} %}
+    {% set pq = {'label': label_filter, 'sq': sq, 'title': title_q, 'url': url_q, 'id': id_q, 'labeled_by': labeled_by, 'per_page': per_page} %}
     <div class="pagination" style="margin-top:20px;">
         {% if page > 1 %}
         <a href="{{ url_for('admin.labeling_list', page=page-1, **pq) }}" class="page-link">&laquo;</a>

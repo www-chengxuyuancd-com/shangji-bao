@@ -13,7 +13,13 @@ SKIP_EXTENSIONS = {
 }
 
 
-def extract_same_domain_links(html: str, base_url: str, base_domain: str, max_links: int = 200) -> list[str]:
+def extract_same_domain_links(
+    html: str,
+    base_url: str,
+    base_domain: str,
+    max_links: int = 200,
+    extra_domains: list[str] | None = None,
+) -> list[str]:
     """
     提取 HTML 中与 base_domain 同域名的链接。
 
@@ -22,12 +28,21 @@ def extract_same_domain_links(html: str, base_url: str, base_domain: str, max_li
         base_url: 当前页面 URL（用于解析相对路径）
         base_domain: 基础域名（只提取同域名链接）
         max_links: 最多返回的链接数
+        extra_domains: 额外允许的域名白名单（用于跨子域抓取，例如
+            qy.zhaobiao.cn 列表跳到 zb.zhaobiao.cn 详情）
 
     Returns:
         去重后的绝对 URL 列表
     """
     seen = set()
     result = []
+
+    allowed = {base_domain}
+    if extra_domains:
+        for d in extra_domains:
+            d = (d or "").strip()
+            if d:
+                allowed.add(d)
 
     for match in _HREF_RE.finditer(html):
         href = match.group(1).strip()
@@ -41,7 +56,7 @@ def extract_same_domain_links(html: str, base_url: str, base_domain: str, max_li
         if parsed.scheme not in ("http", "https"):
             continue
 
-        if parsed.netloc != base_domain:
+        if parsed.netloc not in allowed:
             continue
 
         ext = ""

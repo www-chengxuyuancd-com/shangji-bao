@@ -372,6 +372,8 @@ def source_add():
 @admin_bp.route("/sources/<int:sid>/edit", methods=["POST"])
 @login_required
 def source_edit(sid):
+    import json as _json
+
     prisma = get_prisma()
     data = {}
     for field in ("name", "base_url", "search_url_template", "notes"):
@@ -386,10 +388,44 @@ def source_edit(sid):
             data[prisma_field] = val.strip() or None if field != "name" else val.strip()
     rate_limit = request.form.get("rate_limit")
     if rate_limit:
-        data["rateLimit"] = float(rate_limit)
+        try:
+            data["rateLimit"] = float(rate_limit)
+        except ValueError:
+            flash(f"速率必须是数字: {rate_limit}", "error")
+            return redirect(url_for("admin.sources"))
+
+    max_pages = request.form.get("max_pages")
+    if max_pages is not None and max_pages != "":
+        try:
+            data["maxPages"] = int(max_pages)
+        except ValueError:
+            flash(f"最大抓取页数必须是整数: {max_pages}", "error")
+            return redirect(url_for("admin.sources"))
+
+    max_depth = request.form.get("max_depth")
+    if max_depth is not None and max_depth != "":
+        try:
+            data["maxDepth"] = int(max_depth)
+        except ValueError:
+            flash(f"最大遍历深度必须是整数: {max_depth}", "error")
+            return redirect(url_for("admin.sources"))
+
     source_category = request.form.get("source_category")
     if source_category:
         data["sourceCategory"] = source_category.strip()
+
+    config_raw = request.form.get("config")
+    if config_raw is not None:
+        config_raw = config_raw.strip()
+        if config_raw == "":
+            data["config"] = None
+        else:
+            try:
+                _json.loads(config_raw)
+            except _json.JSONDecodeError as e:
+                flash(f"config 不是合法 JSON：{e}", "error")
+                return redirect(url_for("admin.sources"))
+            data["config"] = config_raw
 
     if data:
         prisma.crawlsource.update(where={"id": sid}, data=data)
@@ -538,6 +574,7 @@ def results():
     domain_filter = request.args.get("domain", "").strip()
     keyword_filter = request.args.get("q", "").strip()
     query_filter = request.args.get("sq", "").strip()
+    url_filter = request.args.get("url", "").strip()
 
     where = {}
     if domain_filter:
@@ -546,6 +583,8 @@ def results():
         where["title"] = {"contains": keyword_filter}
     if query_filter:
         where["searchQuery"] = {"contains": query_filter}
+    if url_filter:
+        where["url"] = {"contains": url_filter}
 
     total = prisma.searchresult.count(where=where)
     items = prisma.searchresult.find_many(
@@ -575,6 +614,7 @@ def results():
         domain_filter=domain_filter,
         keyword_filter=keyword_filter,
         query_filter=query_filter,
+        url_filter=url_filter,
         source_search_map=source_search_map,
     )
 
@@ -646,72 +686,199 @@ def schedule_delete(sid):
 @admin_bp.route("/parsed")
 @login_required
 def parsed_list():
+    """
+    内容解析列表。
+
+    主表为 PG SearchResult（即"所有抓取过的 URL"），left-join Mongo raw_pages
+    （拿 HTML/crawled_at）和 PG parsedresult（拿解析字段）。
+
+    每行解析状态：
+      - parsed    : 有解析记录、无 parseErrors
+      - error     : 有解析记录、parseErrors 非空
+      - unparsed  : raw_pages 里有 HTML，但 parsedresult 里没记录
+      - unfetched : raw_pages 里都没有，HTML 还没下载（如 force_url 当时失败 / 搜索引擎只发现了 URL）
+    """
+    import hashlib
+    import os
+    from pymongo import MongoClient
+
     prisma = get_prisma()
     page = request.args.get("page", 1, type=int)
     per_page = min(request.args.get("per_page", 20, type=int), 500)
     q = request.args.get("q", "").strip()
     bidder_q = request.args.get("bidder", "").strip()
     location_q = request.args.get("location", "").strip()
+    url_q = request.args.get("url", "").strip()
     relevant_q = request.args.get("relevant", "").strip()
     notice_type_q = request.args.get("notice_type", "").strip()
+    parse_status_q = request.args.get("parse_status", "").strip()  # "" / parsed / unparsed / error / unfetched
     sort_by = request.args.get("sort", "createdAt")
     sort_dir = request.args.get("dir", "desc")
 
-    where = {}
-    if q:
-        where["title"] = {"contains": q}
-    if bidder_q:
-        where["bidder"] = {"contains": bidder_q}
-    if location_q:
-        where["location"] = {"contains": location_q}
-    if relevant_q == "yes":
-        where["isRelevant"] = True
-    elif relevant_q == "no":
-        where["isRelevant"] = False
-    if notice_type_q:
-        where["noticeType"] = notice_type_q
-
-    allowed_sorts = ["createdAt", "publishDate", "amountValue", "relevanceScore", "title", "bidder", "location", "noticeType"]
-    if sort_by not in allowed_sorts:
-        sort_by = "createdAt"
-    order_dir = "asc" if sort_dir == "asc" else "desc"
-
-    total = prisma.parsedresult.count(where=where)
-    items = prisma.parsedresult.find_many(
-        where=where,
-        order={sort_by: order_dir},
-        skip=(page - 1) * per_page,
-        take=per_page,
-    )
-    total_pages = (total + per_page - 1) // per_page
-
+    # ---- 全局统计 ----
+    search_total = prisma.searchresult.count()
     parsed_total = prisma.parsedresult.count()
     mongo_total = 0
+    raw_pages = None
+    mc = None
     try:
-        import os
-        from pymongo import MongoClient
         uri = os.getenv("MONGO_URI", "mongodb://mongodb:mongodb@localhost:27017/shangjibao?authSource=admin")
         mc = MongoClient(uri, serverSelectionTimeoutMS=2000)
         mdb = mc.get_default_database()
-        mongo_total = mdb["raw_pages"].count_documents(
-            {"meta.source_type": {"$in": ["search_result", "website"]}}
-        )
-        mc.close()
+        raw_pages = mdb["raw_pages"]
+        mongo_total = raw_pages.count_documents({})
     except Exception:
-        pass
-    unparsed = max(0, mongo_total - parsed_total)
+        raw_pages = None
+    unparsed_total = max(0, mongo_total - parsed_total)
+    unfetched_total = max(0, search_total - mongo_total)
 
-    import os as _os
-    model_path = _os.path.join(
-        _os.getenv("MODEL_DIR", _os.path.join(_os.path.dirname(__file__), "..", "..", "classifier", "data", "models")),
+    # ---- 列表查询：以 SearchResult 为主表 ----
+    items = []
+    total = 0
+
+    # 仅"已解析"相关字段过滤（bidder/location/relevant/notice_type/parse_status=parsed|error）
+    # 时走 ParsedResult 主表分页，因为这些字段都只在 ParsedResult 上才有意义。
+    wants_parsed_join = bool(
+        bidder_q or location_q or relevant_q or notice_type_q
+        or parse_status_q in ("parsed", "error")
+    )
+
+    if wants_parsed_join:
+        where = {}
+        if q:
+            where["title"] = {"contains": q}
+        if url_q:
+            where["url"] = {"contains": url_q}
+        if bidder_q:
+            where["bidder"] = {"contains": bidder_q}
+        if location_q:
+            where["location"] = {"contains": location_q}
+        if relevant_q == "yes":
+            where["isRelevant"] = True
+        elif relevant_q == "no":
+            where["isRelevant"] = False
+        if notice_type_q:
+            where["noticeType"] = notice_type_q
+        if parse_status_q == "error":
+            where["parseErrors"] = {"not": None}
+        elif parse_status_q == "parsed":
+            where["parseErrors"] = None
+
+        allowed_sorts = ["createdAt", "publishDate", "amountValue", "relevanceScore",
+                         "title", "bidder", "location", "noticeType"]
+        sort_field = sort_by if sort_by in allowed_sorts else "createdAt"
+        order_dir = "asc" if sort_dir == "asc" else "desc"
+
+        total = prisma.parsedresult.count(where=where)
+        parsed_rows = prisma.parsedresult.find_many(
+            where=where, order={sort_field: order_dir},
+            skip=(page - 1) * per_page, take=per_page,
+        )
+
+        mongo_by_hash: dict = {}
+        if raw_pages is not None and parsed_rows:
+            for d in raw_pages.find(
+                {"url": {"$in": [pr.url for pr in parsed_rows]}},
+                {"_id": 1, "url": 1, "crawled_at": 1, "meta": 1, "source_name": 1},
+            ):
+                h = hashlib.md5(d["url"].encode("utf-8")).hexdigest()
+                if h not in mongo_by_hash:
+                    mongo_by_hash[h] = d
+
+        sr_by_hash: dict = {}
+        if parsed_rows:
+            sr_list = prisma.searchresult.find_many(
+                where={"urlHash": {"in": [pr.urlHash for pr in parsed_rows if pr.urlHash]}},
+            )
+            sr_by_hash = {sr.urlHash: sr for sr in sr_list}
+
+        for pr in parsed_rows:
+            doc = mongo_by_hash.get(pr.urlHash)
+            sr = sr_by_hash.get(pr.urlHash)
+            items.append(_build_parsed_row(pr, doc, sr))
+    else:
+        # 主路径：SearchResult 翻页，左联 raw_pages 与 ParsedResult
+        sr_where: dict = {}
+        if q:
+            sr_where["title"] = {"contains": q}
+        if url_q:
+            sr_where["url"] = {"contains": url_q}
+
+        allowed_sr_sorts = ["createdAt", "publishDate", "title"]
+        sort_field = sort_by if sort_by in allowed_sr_sorts else "createdAt"
+        order_dir = "asc" if sort_dir == "asc" else "desc"
+
+        # parse_status=unparsed/unfetched 时，over-fetch 后客户端过滤
+        over_factor = 5 if parse_status_q in ("unparsed", "unfetched") else 1
+        skip = (page - 1) * per_page
+        fetch_limit = per_page * over_factor
+
+        sr_count = prisma.searchresult.count(where=sr_where)
+        sr_rows = prisma.searchresult.find_many(
+            where=sr_where, order={sort_field: order_dir},
+            skip=skip, take=fetch_limit,
+        )
+
+        mongo_by_hash: dict = {}
+        if raw_pages is not None and sr_rows:
+            for d in raw_pages.find(
+                {"url": {"$in": [sr.url for sr in sr_rows]}},
+                {"_id": 1, "url": 1, "crawled_at": 1, "meta": 1, "source_name": 1},
+            ):
+                h = hashlib.md5(d["url"].encode("utf-8")).hexdigest()
+                cur = mongo_by_hash.get(h)
+                if cur is None or (
+                    d.get("crawled_at") and (cur.get("crawled_at") is None or d["crawled_at"] > cur["crawled_at"])
+                ):
+                    mongo_by_hash[h] = d
+
+        parsed_by_hash: dict = {}
+        hash_set = [sr.urlHash for sr in sr_rows if sr.urlHash]
+        if hash_set:
+            pr_list = prisma.parsedresult.find_many(where={"urlHash": {"in": hash_set}})
+            parsed_by_hash = {pr.urlHash: pr for pr in pr_list}
+
+        collected = 0
+        for sr in sr_rows:
+            doc = mongo_by_hash.get(sr.urlHash)
+            pr = parsed_by_hash.get(sr.urlHash)
+
+            if parse_status_q == "unfetched" and doc is not None:
+                continue
+            if parse_status_q == "unparsed" and (doc is None or pr is not None):
+                continue
+
+            items.append(_build_parsed_row(pr, doc, sr))
+            collected += 1
+            if collected >= per_page:
+                break
+
+        if parse_status_q == "unparsed":
+            total = unparsed_total
+        elif parse_status_q == "unfetched":
+            total = unfetched_total
+        else:
+            total = sr_count
+
+    if mc is not None:
+        try:
+            mc.close()
+        except Exception:
+            pass
+
+    total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
+
+    # ---- 模型可用状态 ----
+    model_path = os.path.join(
+        os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "classifier", "data", "models")),
         "relevance_model.bin",
     )
-    fasttext_exists = _os.path.exists(model_path)
+    fasttext_exists = os.path.exists(model_path)
 
     bert_model_exists = False
     try:
         from src.classifier.bert_trainer import BERT_MODEL_DIR
-        bert_model_exists = _os.path.exists(_os.path.join(BERT_MODEL_DIR, "config.json"))
+        bert_model_exists = os.path.exists(os.path.join(BERT_MODEL_DIR, "config.json"))
     except Exception:
         pass
 
@@ -727,16 +894,107 @@ def parsed_list():
         q=q,
         bidder_q=bidder_q,
         location_q=location_q,
+        url_q=url_q,
         relevant_q=relevant_q,
         notice_type_q=notice_type_q,
+        parse_status_q=parse_status_q,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        search_total=search_total,
         parsed_total=parsed_total,
         mongo_total=mongo_total,
-        unparsed=unparsed,
+        unparsed=unparsed_total,
+        unfetched=unfetched_total,
         model_exists=model_exists,
         bert_model_exists=bert_model_exists,
     )
+
+
+def _build_parsed_row(pr, mongo_doc, search_result=None) -> dict:
+    """
+    把 (ParsedResult, raw_pages doc, SearchResult) 整合成模板需要的统一行。
+    任一可为 None。
+    """
+    sr = search_result
+    if pr is None and mongo_doc is None and sr is None:
+        return {}
+
+    meta = (mongo_doc or {}).get("meta") or {}
+    raw_title = meta.get("title") or ""
+    raw_url = (
+        (mongo_doc or {}).get("url")
+        or (pr.url if pr else None)
+        or (sr.url if sr else "")
+    )
+    raw_source = (
+        (mongo_doc or {}).get("source_name")
+        or (pr.sourceName if pr else None)
+        or (sr.sourceName if sr else "")
+        or ""
+    )
+    raw_search = (
+        (mongo_doc or {}).get("search_query")
+        or (pr.searchQuery if pr else None)
+        or (sr.searchQuery if sr else "")
+        or ""
+    )
+    raw_crawled_at = (mongo_doc or {}).get("crawled_at")
+    raw_source_type = meta.get("source_type") or (sr.sourceType if sr else "") or ""
+
+    # 解析状态四档
+    if pr is not None:
+        parse_status = "error" if pr.parseErrors else "parsed"
+        parse_errors = pr.parseErrors
+    elif mongo_doc is not None:
+        parse_status = "unparsed"
+        parse_errors = None
+    else:
+        parse_status = "unfetched"
+        parse_errors = None
+
+    # 标题优先级：parsed.title > sr.title > meta.title > url
+    title = None
+    if pr and pr.title:
+        title = pr.title
+    elif sr and sr.title and not sr.title.startswith("http"):
+        # SearchResult.title 偶尔是 url 兜底（gov_api 详情页失败时），过滤掉
+        title = sr.title
+    elif raw_title:
+        title = raw_title
+    title = title or "(未抓到标题)"
+
+    return {
+        "id": pr.id if pr else None,
+        "sr_id": sr.id if sr else None,
+        "mongo_id": str(mongo_doc["_id"]) if mongo_doc else (pr.mongoDocId if pr else None),
+        "url": raw_url,
+        "title": title,
+        "summary": pr.summary if pr else None,
+        "noticeType": pr.noticeType if pr else None,
+        "publishDate": (pr.publishDate if pr else None) or (sr.publishDate if sr else None),
+        "bidder": pr.bidder if pr else None,
+        "location": pr.location if pr else None,
+        "amount": pr.amount if pr else None,
+        "amountValue": pr.amountValue if pr else None,
+        "bidEndTime": pr.bidEndTime if pr else None,
+        "contact": pr.contact if pr else None,
+        "isRelevant": pr.isRelevant if pr else None,
+        "relevanceScore": pr.relevanceScore if pr else None,
+        "matchedKeywords": pr.matchedKeywords if pr else None,
+        "searchQuery": raw_search,
+        "sourceName": raw_source,
+        "sourceType": raw_source_type,
+        "createdAt": (
+            (pr.createdAt if pr else None)
+            or raw_crawled_at
+            or (sr.createdAt if sr else None)
+        ),
+        "crawledAt": raw_crawled_at,
+        "fetchedAt": (sr.createdAt if sr else None),
+        "parseStatus": parse_status,
+        "parseErrors": parse_errors,
+        "parserVersion": pr.parserVersion if pr else None,
+    }
 
 
 @admin_bp.route("/parsed/start", methods=["POST"])
@@ -754,6 +1012,194 @@ def parse_rejudge():
     from src.parser.engine import start_relevance_rejudge
     job_id = start_relevance_rejudge()
     flash(f"相关性重新判定任务已启动（使用最新模型），任务 ID: {job_id}", "success")
+    return redirect(url_for("admin.parsed_list"))
+
+
+@admin_bp.route("/parsed/parse-one", methods=["POST"])
+@login_required
+def parse_one_url():
+    """
+    对一个单独 URL 触发同步抓取+解析：
+      - 若 raw_pages 已有 HTML → 直接解析
+      - 否则 → 立即 HTTP 抓一次详情页，写入 raw_pages 再解析（可救回 force_url 当时失败的孤儿）
+    """
+    import hashlib
+    import os
+    import time
+    from datetime import datetime, timezone
+    from pymongo import MongoClient
+
+    target_url = (request.form.get("url") or "").strip()
+    if not target_url:
+        flash("URL 不能为空", "error")
+        return redirect(url_for("admin.parsed_list"))
+
+    prisma = get_prisma()
+    url_hash = hashlib.md5(target_url.encode("utf-8")).hexdigest()
+
+    mc = None
+    try:
+        uri = os.getenv(
+            "MONGO_URI",
+            "mongodb://mongodb:mongodb@localhost:27017/shangjibao?authSource=admin",
+        )
+        mc = MongoClient(uri, serverSelectionTimeoutMS=2000)
+        mdb = mc.get_default_database()
+        raw_pages = mdb["raw_pages"]
+        doc = raw_pages.find_one({"url": target_url}, sort=[("crawled_at", -1)])
+    except Exception as e:
+        flash(f"无法连接 MongoDB: {e}", "error")
+        if mc is not None:
+            mc.close()
+        return redirect(url_for("admin.parsed_list"))
+
+    # 没 doc 或 HTML 太短 → 立刻抓一次（这正是 unfetched 的救援路径）
+    needs_refetch = (not doc) or (not (doc.get("html") or "")) or len(doc.get("html") or "") < 50
+    if needs_refetch:
+        try:
+            import requests
+            from src.scheduler.runner import _decode_response  # 智能编码处理
+            from src.crawler.gov_api_crawler import _save_raw_page  # 与 gov_api 一致
+
+            sr_existing = prisma.searchresult.find_unique(where={"urlHash": url_hash})
+            referer = "https://" + (target_url.split("/", 3)[2]) + "/" if "//" in target_url else ""
+
+            t0 = time.time()
+            resp = requests.get(
+                target_url,
+                timeout=20,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Referer": referer,
+                },
+            )
+            dt = time.time() - t0
+            if resp.status_code != 200:
+                if mc is not None:
+                    mc.close()
+                flash(f"抓取失败 HTTP {resp.status_code}（耗时 {dt:.1f}s）：{target_url[:80]}", "error")
+                return redirect(url_for("admin.parsed_list"))
+            html_fetched = _decode_response(resp)
+            if not html_fetched or len(html_fetched) < 50:
+                if mc is not None:
+                    mc.close()
+                flash(f"抓回的 HTML 过短/为空，无法解析：{target_url[:80]}", "error")
+                return redirect(url_for("admin.parsed_list"))
+            _save_raw_page(
+                raw_pages, target_url, html_fetched,
+                source_type=(sr_existing.sourceType if sr_existing else "manual_refetch"),
+                title=(sr_existing.title if sr_existing else ""),
+                search_query=(sr_existing.searchQuery if sr_existing else "manual"),
+                source_name=(sr_existing.sourceName if sr_existing else "manual"),
+            )
+            doc = raw_pages.find_one({"url": target_url}, sort=[("crawled_at", -1)])
+            flash(f"已重新抓取 ({dt:.1f}s, {len(html_fetched)} 字节)，开始解析…", "success")
+        except Exception as e:
+            if mc is not None:
+                mc.close()
+            flash(f"抓取异常：{type(e).__name__}: {e}", "error")
+            return redirect(url_for("admin.parsed_list"))
+
+    html = doc.get("html") or ""
+    if not html or len(html) < 50:
+        if mc is not None:
+            mc.close()
+        flash("原始页面 HTML 为空或过短，无法解析", "error")
+        return redirect(url_for("admin.parsed_list"))
+
+    meta = doc.get("meta") or {}
+    user_keywords = [
+        kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})
+    ]
+    context = {
+        "url": target_url,
+        "title": meta.get("title", ""),
+        "search_query": doc.get("search_query", "") or "",
+        "source_name": doc.get("source_name", "") or "",
+        "user_keywords": user_keywords,
+    }
+
+    from src.parser.engine import parse_one
+    from src.parser.base import PARSER_VERSION
+
+    try:
+        result = parse_one(html, target_url, context)
+    except Exception as e:
+        if mc is not None:
+            mc.close()
+        flash(f"解析异常：{e}", "error")
+        return redirect(url_for("admin.parsed_list"))
+
+    existing = prisma.parsedresult.find_unique(where={"urlHash": url_hash})
+
+    base_data = {
+        "url": target_url,
+        "urlHash": url_hash,
+        "mongoDocId": str(doc["_id"]),
+        "searchQuery": context.get("search_query") or None,
+        "sourceName": context.get("source_name") or None,
+        "parserVersion": PARSER_VERSION,
+        "createdBy": "manual",
+        "updatedBy": "manual",
+    }
+
+    if result.get("_invalid"):
+        data = {
+            **base_data,
+            "title": context.get("title") or meta.get("title") or None,
+            "isRelevant": False,
+            "parseErrors": "\n".join(result.get("_errors", [])) or "content_invalid",
+        }
+    elif result.get("_listing"):
+        data = {
+            **base_data,
+            "title": context.get("title") or meta.get("title") or None,
+            "noticeType": "list_page",
+            "isRelevant": False,
+            "relevanceScore": 0.0,
+            "parseErrors": "\n".join(result.get("_errors", [])) or None,
+        }
+    else:
+        amount_data = result.get("amount") or {}
+        amount_display = amount_data.get("display") if isinstance(amount_data, dict) else None
+        amount_value = amount_data.get("value") if isinstance(amount_data, dict) else None
+        rel = result.get("relevance") or {}
+        data = {
+            **base_data,
+            "title": result.get("title") or context.get("title") or None,
+            "summary": result.get("summary"),
+            "publishDate": result.get("publish_date"),
+            "bidder": result.get("bidder"),
+            "location": result.get("location"),
+            "bidStartTime": result.get("bid_start_time"),
+            "bidEndTime": result.get("bid_end_time"),
+            "amount": amount_display,
+            "amountValue": amount_value,
+            "contact": result.get("contact"),
+            "noticeType": result.get("notice_type"),
+            "isRelevant": rel.get("is_relevant"),
+            "relevanceScore": rel.get("score"),
+            "matchedKeywords": rel.get("matched"),
+            "parseErrors": "\n".join(result.get("_errors", [])) or None,
+        }
+
+    try:
+        if existing:
+            update_data = {k: v for k, v in data.items() if k not in ("urlHash", "createdBy")}
+            update_data["updatedAt"] = datetime.now(timezone.utc)
+            prisma.parsedresult.update(where={"id": existing.id}, data=update_data)
+            flash(f"已重新解析：{(data.get('title') or target_url)[:60]}", "success")
+        else:
+            prisma.parsedresult.create(data=data)
+            flash(f"已解析：{(data.get('title') or target_url)[:60]}", "success")
+    except Exception as e:
+        flash(f"写入解析结果失败：{e}", "error")
+
+    if mc is not None:
+        mc.close()
     return redirect(url_for("admin.parsed_list"))
 
 
@@ -857,6 +1303,7 @@ def notify_list():
     status_filter = request.args.get("status", "").strip()
     days_filter = request.args.get("days", "", type=str).strip()
     q = request.args.get("q", "").strip()
+    url_q = request.args.get("url", "").strip()
     notice_type_filter = request.args.get("notice_type", "").strip()
 
     msg_where: dict = {}
@@ -871,6 +1318,8 @@ def notify_list():
             pass
     if q:
         msg_where["title"] = {"contains": q}
+    if url_q:
+        msg_where["url"] = {"contains": url_q}
     if notice_type_filter:
         msg_where["noticeType"] = notice_type_filter
 
@@ -901,6 +1350,7 @@ def notify_list():
         status_filter=status_filter,
         days_filter=days_filter,
         q=q,
+        url_q=url_q,
         notice_type_filter=notice_type_filter,
         sent_count=sent_count,
         failed_count=failed_count,
@@ -1141,6 +1591,7 @@ def labeling_list():
     label_filter = request.args.get("label", "").strip()
     sq = request.args.get("sq", "").strip()
     title_q = request.args.get("title", "").strip()
+    url_q = request.args.get("url", "").strip()
     id_q = request.args.get("id", "").strip()
     labeled_by = request.args.get("labeled_by", "").strip()
 
@@ -1155,6 +1606,8 @@ def labeling_list():
         where["searchQuery"] = {"contains": sq}
     if title_q:
         where["title"] = {"contains": title_q}
+    if url_q:
+        where["url"] = {"contains": url_q}
     if id_q:
         try:
             where["id"] = int(id_q)
@@ -1228,6 +1681,7 @@ def labeling_list():
         label_filter=label_filter,
         sq=sq,
         title_q=title_q,
+        url_q=url_q,
         id_q=id_q,
         labeled_by=labeled_by,
         total_all=total_all,

@@ -17,6 +17,8 @@ from src.parser.base import PARSER_VERSION
 from src.parser.extractors import (
     html_to_text,
     is_valid_content,
+    detect_listing_page,
+    is_search_engine_url,
     PublishDateExtractor,
     BidderExtractor,
     LocationExtractor,
@@ -53,9 +55,34 @@ def parse_one(html: str, url: str, context: dict) -> dict:
     result = {}
     errors = []
 
+    # 最先短路：搜索引擎结果页（百度/Bing/Google 等）只是发现链接的中间页，
+    # 不该被当业务详情解析，更不该参与相关性评分。
+    if is_search_engine_url(url):
+        result["_listing"] = True
+        result["_listing_info"] = {"rule": "search_serp"}
+        result["_search_serp"] = True
+        errors.append(
+            "search_serp: 搜索引擎结果页（如百度/Bing/Google），无业务正文内容，已自动判定为不相关"
+        )
+        result["_errors"] = errors
+        return result
+
     if not is_valid_content(text):
         result["_invalid"] = True
         errors.append("content_invalid: 页面内容无效（JS/CSS/反爬页面），无有效中文内容")
+        result["_errors"] = errors
+        return result
+
+    listing_info = detect_listing_page(html, text)
+    if listing_info is not None:
+        result["_listing"] = True
+        result["_listing_info"] = listing_info
+        errors.append(
+            "listing_page: 命中列表聚合页特征（"
+            f"链接条目={listing_info['text_links']}, 含日期条目={listing_info['dated_links']}, "
+            f"占比={listing_info['ratio']}, 命中规则={listing_info.get('rule', '-')}）"
+            "，已自动判定为不相关"
+        )
         result["_errors"] = errors
         return result
 
@@ -89,8 +116,10 @@ def _run_parse_job(job_id: int):
 
         user_keywords = [kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})]
 
+        # 不再按 meta.source_type 过滤——任何 raw_page 只要还没解析就纳入解析队列。
+        # （历史上只解析 search_result/website，导致 gov_api 来源的详情页全部漏解析）
         docs = list(raw_pages.find(
-            {"meta.source_type": {"$in": ["search_result", "website"]}},
+            {},
             {"_id": 1, "url": 1, "html": 1, "search_query": 1, "source_name": 1, "meta": 1},
         ))
 
@@ -110,7 +139,10 @@ def _run_parse_job(job_id: int):
             url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
 
             existing = prisma.parsedresult.find_unique(where={"urlHash": url_hash})
-            if existing:
+            # 已成功解析过的（parseErrors 为空）跳过；
+            # 之前失败/报错的（parseErrors 有内容）允许重试——这样修复了乱码 HTML 之后
+            # 重新点"启动解析"就能把历史 content_invalid 记录刷成正常解析结果。
+            if existing and not existing.parseErrors:
                 done += 1
                 continue
 
@@ -131,8 +163,20 @@ def _run_parse_job(job_id: int):
             try:
                 result = parse_one(html, url, context)
 
+                def _write(data: dict):
+                    """create 或 update（前者用 upsert 避免并发冲突）。"""
+                    if existing is not None:
+                        update_data = {k: v for k, v in data.items()
+                                       if k not in ("urlHash", "createdBy")}
+                        prisma.parsedresult.update(
+                            where={"id": existing.id},
+                            data=update_data,
+                        )
+                    else:
+                        prisma.parsedresult.create(data=data)
+
                 if result.get("_invalid"):
-                    prisma.parsedresult.create(data={
+                    _write({
                         "url": url,
                         "urlHash": url_hash,
                         "mongoDocId": str(doc["_id"]),
@@ -149,6 +193,26 @@ def _run_parse_job(job_id: int):
                     done += 1
                     continue
 
+                if result.get("_listing"):
+                    _write({
+                        "url": url,
+                        "urlHash": url_hash,
+                        "mongoDocId": str(doc["_id"]),
+                        "title": context.get("title") or meta.get("title"),
+                        "searchQuery": context.get("search_query"),
+                        "sourceName": context.get("source_name"),
+                        # search_serp 单独打 tag，便于后续过滤这种"搜索引擎结果页"
+                        "noticeType": "search_serp" if result.get("_search_serp") else "list_page",
+                        "isRelevant": False,
+                        "relevanceScore": 0.0,
+                        "parserVersion": PARSER_VERSION,
+                        "parseErrors": "\n".join(result.get("_errors", [])),
+                        "createdBy": "system",
+                    })
+                    parsed_count += 1
+                    done += 1
+                    continue
+
                 amount_data = result.get("amount")
                 amount_display = None
                 amount_value = None
@@ -158,7 +222,7 @@ def _run_parse_job(job_id: int):
 
                 relevance_data = result.get("relevance", {}) or {}
 
-                prisma.parsedresult.create(data={
+                _write({
                     "url": url,
                     "urlHash": url_hash,
                     "mongoDocId": str(doc["_id"]),
@@ -314,12 +378,33 @@ def _run_relevance_rejudge(job_id: int):
 
         for pr in all_results:
             try:
+                if pr.noticeType in ("list_page", "search_serp"):
+                    done += 1
+                    continue
+
+                # 优先做"搜索引擎结果页"判定（成本最低，零 IO）
+                if is_search_engine_url(pr.url or ""):
+                    prisma.parsedresult.update(
+                        where={"id": pr.id},
+                        data={
+                            "isRelevant": False,
+                            "relevanceScore": 0.0,
+                            "noticeType": "search_serp",
+                            "parseErrors": "search_serp: 搜索引擎结果页（如百度/Bing/Google），无业务正文",
+                        },
+                    )
+                    updated += 1
+                    done += 1
+                    continue
+
                 text = None
+                html_for_listing = None
                 if pr.mongoDocId:
                     from bson import ObjectId
                     mongo_doc = raw_pages.find_one({"_id": ObjectId(pr.mongoDocId)})
                     if mongo_doc and mongo_doc.get("html"):
-                        text = html_to_text(mongo_doc["html"])
+                        html_for_listing = mongo_doc["html"]
+                        text = html_to_text(html_for_listing)
 
                 if not text:
                     text = (pr.summary or "") + " " + (pr.title or "")
@@ -327,6 +412,28 @@ def _run_relevance_rejudge(job_id: int):
                 if not text.strip():
                     done += 1
                     continue
+
+                if html_for_listing:
+                    listing_info = detect_listing_page(html_for_listing, text)
+                    if listing_info is not None:
+                        prisma.parsedresult.update(
+                            where={"id": pr.id},
+                            data={
+                                "isRelevant": False,
+                                "relevanceScore": 0.0,
+                                "noticeType": "list_page",
+                                "parseErrors": (
+                                    "listing_page: 命中列表聚合页特征（"
+                                    f"链接条目={listing_info['text_links']}, "
+                                    f"含日期条目={listing_info['dated_links']}, "
+                                    f"占比={listing_info['ratio']}, "
+                                    f"命中规则={listing_info.get('rule', '-')}）"
+                                ),
+                            },
+                        )
+                        updated += 1
+                        done += 1
+                        continue
 
                 context = {
                     "url": pr.url,

@@ -5,8 +5,51 @@
 """
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 
 from src.parser.base import FieldExtractor
+
+
+# ====================== 搜索引擎结果页识别 ======================
+# 这些页面只是"搜索引擎中我们用来发现链接的中间页"，不应该被当成业务详情解析。
+# 命中后直接判为不相关、noticeType=search_serp，不进相关性打分。
+
+# host -> 命中即视作 SERP 的 path 前缀（任意路径直接匹配主域）
+_SEARCH_ENGINE_HOSTS = {
+    "www.baidu.com": ("/s",),
+    "m.baidu.com": ("/s",),
+    "www.google.com": ("/search",),
+    "google.com": ("/search",),
+    "www.bing.com": ("/search",),
+    "cn.bing.com": ("/search",),
+    "bing.com": ("/search",),
+    "www.sogou.com": ("/web", "/sogou"),
+    "www.so.com": ("/s",),
+    "m.so.com": ("/s",),
+    "www.haosou.com": ("/s",),
+    "duckduckgo.com": ("/", "/?"),
+    "search.yahoo.com": ("/search",),
+    # 360 / 神马 / 头条搜索
+    "yz.m.sm.cn": ("/s",),
+    "m.sm.cn": ("/s",),
+    "so.toutiao.com": ("/search",),
+}
+
+
+def is_search_engine_url(url: str) -> bool:
+    """判断 url 是不是搜索引擎结果页（SERP）。"""
+    if not url:
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    host = (p.netloc or "").lower()
+    path = p.path or "/"
+    prefixes = _SEARCH_ENGINE_HOSTS.get(host)
+    if not prefixes:
+        return False
+    return any(path == pre or path.startswith(pre) for pre in prefixes)
 
 # ====================== 工具函数 ======================
 
@@ -47,6 +90,96 @@ def is_valid_content(text: str, min_chinese_ratio: float = 0.15, min_chinese_cha
     if total_chinese < min_chinese_chars:
         return False
     return True
+
+
+# ====================== 列表页检测 ======================
+# 思路：
+# 列表聚合页（如 https://www.qianlima.com/hot13622224/ 与
+# https://ggzyjy.sc.gov.cn/xwzx/moreinfomenu.html）的核心特征：页面上充斥着
+# 大量"链接 + 日期"并列条目；详情页则通常只在头部有一个发布时间，主体是大段连续中文正文。
+#
+# 我们扫描每个 <a> 标签：
+#   1) 取链接前一段文本（前 120 字，包含 <li><span>2024-03-15</span><a>...</a> 这种结构里的日期）
+#   2) 取链接锚文本本身（含日期的标题，如 "关于2025年10月17日...的公示"）
+#   3) 取链接后一段文本（后 120 字，包含 <a>...</a><span>2024-03-15</span> 这种结构里的日期）
+# 在以上 3 个区间里搜一次"列表式日期"，命中即记为"日期型链接"。
+# 当"日期型链接 ≥ 8" 且 占比 ≥ 30% 时，判为列表页。
+# 此外，当"日期型链接 ≥ 15"（绝对量已经很大）时，无视占比直接判为列表页，避免被大量
+# 友情链接/导航链接拉低占比。
+
+_A_TAG_RE = re.compile(r"<a\b[^>]*>(?P<inner>.*?)</a>", re.IGNORECASE | re.DOTALL)
+
+# 同时支持：2024-03-15 / 2024/3/15 / 2024年3月15日 / 03-15 / 3月15日
+_LIST_DATE_RE = re.compile(
+    r"(?:\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
+    r"|\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?)"
+)
+_TAGS_RE = re.compile(r"<[^>]+>")
+
+
+def detect_listing_page(html: str, text: str) -> dict | None:
+    """
+    检测是否为"列表聚合页"（大量"链接 + 日期"条目）。
+
+    返回 None 表示不是列表页；返回 dict 表示是列表页，含命中统计。
+    """
+    if not html:
+        return None
+
+    matches = list(_A_TAG_RE.finditer(html))
+    if len(matches) < 8:
+        return None
+
+    text_links = 0
+    dated_links = 0
+
+    for m in matches:
+        inner = m.group("inner")
+        inner_text = _TAGS_RE.sub(" ", inner)
+        inner_text = _WHITESPACE_RE.sub(" ", inner_text).strip()
+        if len(inner_text) < 4:
+            continue
+        if not _CHINESE_RE.search(inner_text):
+            continue
+        text_links += 1
+
+        # 取链接前后 120 字符纯文本上下文
+        before_html = html[max(0, m.start() - 220): m.start()]
+        after_html = html[m.end(): m.end() + 220]
+        before_text = _WHITESPACE_RE.sub(" ", _TAGS_RE.sub(" ", before_html))[-120:]
+        after_text = _WHITESPACE_RE.sub(" ", _TAGS_RE.sub(" ", after_html))[:120]
+
+        if (
+            _LIST_DATE_RE.search(inner_text)
+            or _LIST_DATE_RE.search(before_text)
+            or _LIST_DATE_RE.search(after_text)
+        ):
+            dated_links += 1
+
+    if text_links < 8 or dated_links < 8:
+        return None
+
+    ratio = dated_links / text_links
+
+    # 强信号：绝对数量足够多（≥ 15 个"链接+日期"条目），直接判定为列表页。
+    if dated_links >= 15:
+        return {
+            "text_links": text_links,
+            "dated_links": dated_links,
+            "ratio": round(ratio, 3),
+            "rule": "abs>=15",
+        }
+
+    # 普通信号：占比 ≥ 30%。
+    if ratio >= 0.30:
+        return {
+            "text_links": text_links,
+            "dated_links": dated_links,
+            "ratio": round(ratio, 3),
+            "rule": "ratio>=0.30",
+        }
+
+    return None
 
 
 # ====================== 日期提取 ======================

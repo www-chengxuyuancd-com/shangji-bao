@@ -8,8 +8,9 @@
         <input type="text" name="q" class="form-input" placeholder="搜索标题" value="{{ keyword_filter }}" style="min-width:150px;">
         <input type="text" name="sq" class="form-input" placeholder="筛选搜索词" value="{{ query_filter }}" style="min-width:150px;">
         <input type="text" name="domain" class="form-input" placeholder="筛选域名" value="{{ domain_filter }}" style="min-width:130px;">
+        <input type="text" name="url" class="form-input" placeholder="筛选URL（模糊）" value="{{ url_filter }}" style="min-width:180px;">
         <button type="submit" class="btn btn-primary btn-sm">筛选</button>
-        {% if keyword_filter or domain_filter or query_filter %}
+        {% if keyword_filter or domain_filter or query_filter or url_filter %}
         <a href="{{ url_for('admin.results') }}" class="btn btn-ghost btn-sm">清除筛选</a>
         {% endif %}
         <span style="margin-left:auto; color:#999; font-size:13px;">共 {{ total }} 条结果</span>
@@ -85,24 +86,24 @@
     {% if total_pages > 1 %}
     <div class="pagination" style="margin-top:20px;">
         {% if page > 1 %}
-        <a href="{{ url_for('admin.results', page=page-1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">&laquo; 上一页</a>
+        <a href="{{ url_for('admin.results', page=page-1, q=keyword_filter, sq=query_filter, domain=domain_filter, url=url_filter) }}" class="page-link">&laquo; 上一页</a>
         {% endif %}
         {% set start_page = [1, page - 3] | max %}
         {% set end_page = [total_pages, page + 3] | min %}
         {% if start_page > 1 %}
-        <a href="{{ url_for('admin.results', page=1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">1</a>
+        <a href="{{ url_for('admin.results', page=1, q=keyword_filter, sq=query_filter, domain=domain_filter, url=url_filter) }}" class="page-link">1</a>
         {% if start_page > 2 %}<span class="page-info">...</span>{% endif %}
         {% endif %}
         {% for p in range(start_page, end_page + 1) %}
-        <a href="{{ url_for('admin.results', page=p, q=keyword_filter, sq=query_filter, domain=domain_filter) }}"
+        <a href="{{ url_for('admin.results', page=p, q=keyword_filter, sq=query_filter, domain=domain_filter, url=url_filter) }}"
            class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
         {% endfor %}
         {% if end_page < total_pages %}
         {% if end_page < total_pages - 1 %}<span class="page-info">...</span>{% endif %}
-        <a href="{{ url_for('admin.results', page=total_pages, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">{{ total_pages }}</a>
+        <a href="{{ url_for('admin.results', page=total_pages, q=keyword_filter, sq=query_filter, domain=domain_filter, url=url_filter) }}" class="page-link">{{ total_pages }}</a>
         {% endif %}
         {% if page < total_pages %}
-        <a href="{{ url_for('admin.results', page=page+1, q=keyword_filter, sq=query_filter, domain=domain_filter) }}" class="page-link">下一页 &raquo;</a>
+        <a href="{{ url_for('admin.results', page=page+1, q=keyword_filter, sq=query_filter, domain=domain_filter, url=url_filter) }}" class="page-link">下一页 &raquo;</a>
         {% endif %}
         <span class="page-info">第 {{ page }}/{{ total_pages }} 页</span>
     </div>

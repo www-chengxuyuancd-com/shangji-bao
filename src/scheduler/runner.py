@@ -4,6 +4,7 @@
 支持实时进度上报、暂停/继续、容器重启后自动恢复。
 """
 import hashlib
+import json
 import logging
 import multiprocessing
 import os
@@ -59,6 +60,16 @@ def _extract_domain(url: str) -> str:
         return urlparse(url).netloc
     except Exception:
         return ""
+
+
+def _parse_source_config(cfg_str: str | None) -> dict:
+    if not cfg_str:
+        return {}
+    try:
+        v = json.loads(cfg_str)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
 
 
 def _get_mongo_collection():
@@ -294,7 +305,31 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
                         combo["max_pages"], raw_pages, tracker, job_id,
                     )
                 else:
-                    _crawl_website(prisma, source, raw_pages, tracker)
+                    cfg = _parse_source_config(source.config)
+                    cfg_type = cfg.get("type")
+                    if cfg_type == "gov_api_sc_ggzy":
+                        from src.crawler.gov_api_crawler import crawl_sc_ggzy
+                        crawl_sc_ggzy(
+                            prisma, source, cfg, raw_pages, tracker,
+                            job_id, _check_job_status,
+                        )
+                    elif cfg_type == "ccgp_sichuan":
+                        from src.crawler.ccgp_sichuan_crawler import crawl_ccgp_sichuan
+                        crawl_ccgp_sichuan(
+                            prisma, source, cfg, raw_pages, tracker,
+                            job_id, _check_job_status,
+                        )
+                    elif cfg_type == "list_html":
+                        from src.crawler.list_html_crawler import crawl_list_html
+                        crawl_list_html(
+                            prisma, source, cfg, raw_pages, tracker,
+                            job_id, _check_job_status,
+                        )
+                    else:
+                        _crawl_website(
+                            prisma, source, raw_pages, tracker,
+                            extra_domains=cfg.get("extra_domains"),
+                        )
             except Exception as e:
                 msg = f"[{source.name}] {query}: {e}"
                 logger.error(msg)
@@ -460,11 +495,12 @@ def _fetch_and_store_result(prisma, sr, source, query_str, region, raw_pages, tr
         pass
 
 
-def _crawl_website(prisma, source, raw_pages, tracker):
+def _crawl_website(prisma, source, raw_pages, tracker, extra_domains=None):
     from collections import deque
 
     max_depth = source.maxDepth or 5
     base_domain = _extract_domain(source.baseUrl)
+    extra_domains = list(extra_domains or [])
 
     visited = set()
     queue = deque()
@@ -522,7 +558,9 @@ def _crawl_website(prisma, source, raw_pages, tracker):
 
                 if depth < max_depth:
                     from src.crawler.link_extractor import extract_same_domain_links
-                    links = extract_same_domain_links(html, url, base_domain)
+                    links = extract_same_domain_links(
+                        html, url, base_domain, extra_domains=extra_domains,
+                    )
                     for link in links:
                         link_hash = hashlib.md5(link.encode("utf-8")).hexdigest()
                         if link_hash not in visited:

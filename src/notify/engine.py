@@ -23,7 +23,7 @@ def _get_or_create_config(prisma):
     return cfg
 
 
-_REGION_SUFFIXES = ("市", "区", "县", "镇", "乡", "街道", "社区", "村")
+_REGION_SUFFIXES = ("区", "县", "镇", "乡", "街道", "社区", "村")
 
 
 def _strip_region_suffix(name: str) -> str:
@@ -34,38 +34,48 @@ def _strip_region_suffix(name: str) -> str:
     return name
 
 
-def _build_region_name_set(regions, exclude_levels=None) -> set[str]:
-    """构建地区名称集合。仅对市级别去后缀做模糊匹配，其余级别完全匹配。"""
+# 用于"过滤是否发送"的级别集合：用户配的是区/县级，所以这里只看 district。
+# （传统上 city/street/town/village/community 也属于地区树，但此处用户语义明确为
+# "区/县级别"——见 notify.html 上的 checkbox "只发送匹配后台地区的（区/县级）"）
+_FILTER_LEVELS = {"district"}
+
+
+def _build_region_name_set(regions, include_levels=None) -> set[str]:
+    """构建地区名称集合。完全匹配，不做后缀剥离（避免"自贡市→自贡"那种 2 字误匹配）。"""
     names = set()
     for r in regions:
-        if exclude_levels and r.level in exclude_levels:
+        if include_levels and r.level not in include_levels:
             continue
         if not r.name or len(r.name) < 2:
             continue
         names.add(r.name)
-        if r.level == "city":
-            stripped = _strip_region_suffix(r.name)
-            if len(stripped) >= 2:
-                names.add(stripped)
     return names
 
 
 def _get_region_names_for_filter(prisma):
-    """获取已启用的区域名称集合（排除省级别）。"""
-    enabled_regions = prisma.searchregion.find_many(where={"enabled": True})
-    return _build_region_name_set(enabled_regions, exclude_levels={"province"})
+    """已启用 + 区/县级 区域名集合（用于通知过滤"是否发送"）。"""
+    enabled_regions = prisma.searchregion.find_many(
+        where={"enabled": True, "level": {"in": list(_FILTER_LEVELS)}},
+    )
+    return _build_region_name_set(enabled_regions, include_levels=_FILTER_LEVELS)
 
 
 def _get_disabled_region_names(prisma):
-    """获取已禁用的区域名称集合（排除省级别），用于检测内容是否命中了被排除的区域。"""
-    disabled_regions = prisma.searchregion.find_many(where={"enabled": False})
-    return _build_region_name_set(disabled_regions, exclude_levels={"province"})
+    """已禁用 + 区/县级 区域名集合（用于检测内容是否命中了被排除的区域）。"""
+    disabled_regions = prisma.searchregion.find_many(
+        where={"enabled": False, "level": {"in": list(_FILTER_LEVELS)}},
+    )
+    return _build_region_name_set(disabled_regions, include_levels=_FILTER_LEVELS)
 
 
 def _get_all_region_names(prisma):
-    """获取所有区域名称（用于内容匹配显示）。排除省级别，市级去后缀，其余完全匹配。"""
-    all_regions = prisma.searchregion.find_many()
-    return _build_region_name_set(all_regions, exclude_levels={"province"})
+    """
+    用于"匹配地区"列展示的名称集合。
+
+    与过滤口径保持一致：只取已启用的区/县级地区，避免把"四川省/自贡市/发展（被错误
+    切出来的子串）"这种东西也展示出来。
+    """
+    return _get_region_names_for_filter(prisma)
 
 
 def _match_region(location, enabled_names, disabled_names=None):
@@ -92,7 +102,7 @@ def _match_region(location, enabled_names, disabled_names=None):
 
 
 def _find_matched_regions(title: str, content: str, all_region_names: set) -> str:
-    """在标题和正文中查找匹配到的配置地区，返回逗号分隔的地区名。"""
+    """在标题和正文中查找匹配到的配置地区（区/县级 + 已启用），返回逗号分隔的地区名。"""
     text = f"{title or ''} {content or ''}"
     matched = [name for name in all_region_names if name in text]
     matched.sort(key=lambda n: text.index(n))
@@ -100,7 +110,7 @@ def _find_matched_regions(title: str, content: str, all_region_names: set) -> st
     for m in matched:
         if m not in seen:
             seen.append(m)
-    return ",".join(seen[:5]) if seen else ""
+    return ",".join(seen) if seen else ""
 
 
 def _format_message(item) -> tuple[str, str]:
@@ -199,9 +209,19 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
         disabled_region_names = _get_disabled_region_names(prisma)
         all_region_names = _get_all_region_names(prisma)
 
+        # 把"日期+相关性"过滤前移到 PG 查询：只看 filterDays 内 + isRelevant=True 的，
+        # 否则 publishDate=None 的脏记录会塞满前 N 条排序结果，把真正符合条件的挤掉。
+        cutoff = datetime.now(timezone.utc) - timedelta(days=cfg.filterDays)
+        prefilter_where: dict = {"publishDate": {"gte": cutoff}}
+        if cfg.onlyRelevant:
+            prefilter_where["isRelevant"] = True
         all_items = prisma.parsedresult.find_many(
+            where=prefilter_where,
             order={"publishDate": "desc"},
-            take=2000,
+        )
+        logger.info(
+            "[notify-prepare] 候选 %d 条 (cutoff=%s, onlyRelevant=%s)",
+            len(all_items), cutoff.date(), cfg.onlyRelevant,
         )
 
         stats = {"prepared": 0, "skipped": 0, "existing": 0, "errors": []}
@@ -218,7 +238,9 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                 title, content = _format_message(item)
                 skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
                 matched_region = _find_matched_regions(
-                    item.title, item.summary or item.location or "", all_region_names
+                    item.title,
+                    " ".join(filter(None, [item.location, item.summary])),
+                    all_region_names,
                 )
 
                 prisma.notifymessage.create(data={
@@ -366,7 +388,9 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
 
             skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
             matched_region = _find_matched_regions(
-                item.title, item.summary or item.location or "", all_region_names
+                item.title,
+                " ".join(filter(None, [item.location, item.summary])),
+                all_region_names,
             )
 
             if msg.status == "pending" and skip_reason:

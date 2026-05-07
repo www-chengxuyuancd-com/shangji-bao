@@ -9,16 +9,26 @@
             <input type="text" name="q" class="form-input" placeholder="搜索标题" value="{{ q }}" style="width:130px;">
             <input type="text" name="bidder" class="form-input" placeholder="招标方" value="{{ bidder_q }}" style="width:100px;">
             <input type="text" name="location" class="form-input" placeholder="地点" value="{{ location_q }}" style="width:100px;">
+            <input type="text" name="url" class="form-input" placeholder="URL（模糊）" value="{{ url_q }}" style="width:160px;">
             <select name="notice_type" class="form-input" style="width:90px;">
                 <option value="">公告类型</option>
                 {% for nt in ['招标','中标','变更公告','废标公告','采购意向','预招标','合同','验收公告'] %}
                 <option value="{{ nt }}" {{ 'selected' if notice_type_q == nt }}>{{ nt }}</option>
                 {% endfor %}
+                <option value="list_page" {{ 'selected' if notice_type_q == 'list_page' }}>列表页</option>
+                <option value="search_serp" {{ 'selected' if notice_type_q == 'search_serp' }}>搜索引擎结果页</option>
             </select>
             <select name="relevant" class="form-input" style="width:90px;">
                 <option value="">相关性</option>
                 <option value="yes" {{ 'selected' if relevant_q == 'yes' }}>相关</option>
                 <option value="no" {{ 'selected' if relevant_q == 'no' }}>不相关</option>
+            </select>
+            <select name="parse_status" class="form-input" style="width:110px;" title="解析状态过滤">
+                <option value="">解析状态</option>
+                <option value="parsed" {{ 'selected' if parse_status_q == 'parsed' }}>已解析</option>
+                <option value="unparsed" {{ 'selected' if parse_status_q == 'unparsed' }}>待解析</option>
+                <option value="error" {{ 'selected' if parse_status_q == 'error' }}>解析报错</option>
+                <option value="unfetched" {{ 'selected' if parse_status_q == 'unfetched' }}>待抓取</option>
             </select>
             <select name="per_page" class="form-input" style="width:80px;">
                 {% for n in [20, 50, 100, 200, 500] %}
@@ -26,15 +36,17 @@
                 {% endfor %}
             </select>
             <button type="submit" class="btn btn-primary btn-sm">筛选</button>
-            {% if q or bidder_q or location_q or relevant_q or notice_type_q %}
+            {% if q or bidder_q or location_q or url_q or relevant_q or notice_type_q or parse_status_q %}
             <a href="{{ url_for('admin.parsed_list') }}" class="btn btn-ghost btn-sm">清除</a>
             {% endif %}
         </form>
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
             <span style="font-size:13px; color:#666;">
-                原始页面 <strong>{{ mongo_total }}</strong>
+                抓取记录 <strong>{{ search_total }}</strong>
+                &nbsp;|&nbsp; 已下载HTML <strong>{{ mongo_total }}</strong>
                 &nbsp;|&nbsp; 已解析 <strong style="color:#52c41a;">{{ parsed_total }}</strong>
                 &nbsp;|&nbsp; 待解析 <strong style="color:{{ '#ff4d4f' if unparsed > 0 else '#52c41a' }};">{{ unparsed }}</strong>
+                &nbsp;|&nbsp; 待抓取 <strong style="color:{{ '#faad14' if unfetched > 0 else '#52c41a' }};" title="搜索结果里发现了 URL，但 HTML 还没下载下来（可能 force_url 当时失败）">{{ unfetched }}</strong>
             </span>
             <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
                 <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('确定开始解析 MongoDB 中的原始页面？')">启动解析</button>
@@ -54,7 +66,7 @@
 
 {% macro sort_link(field, label) %}
 {% set new_dir = 'asc' if sort_by == field and sort_dir == 'desc' else 'desc' %}
-<a href="{{ url_for('admin.parsed_list', q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, notice_type=notice_type_q, sort=field, dir=new_dir, per_page=per_page) }}"
+<a href="{{ url_for('admin.parsed_list', q=q, bidder=bidder_q, location=location_q, url=url_q, relevant=relevant_q, notice_type=notice_type_q, parse_status=parse_status_q, sort=field, dir=new_dir, per_page=per_page) }}"
    style="color:inherit; text-decoration:none; white-space:nowrap;">
     {{ label }}
     {% if sort_by == field %}
@@ -69,11 +81,11 @@
         <button type="button" class="btn btn-danger btn-sm" style="margin-left:10px; font-size:12px;" onclick="batchDelete()">批量删除</button>
         <button type="button" class="btn btn-ghost btn-sm" style="font-size:12px;" onclick="clearSelection()">取消选择</button>
     </div>
-    <table class="admin-table" style="table-layout:fixed; width:100%; min-width:1100px;">
+    <table class="admin-table" style="table-layout:fixed; width:100%; min-width:1180px;">
         <thead>
             <tr>
                 <th style="width:35px"><input type="checkbox" id="check-all" onclick="toggleAll(this)"></th>
-                <th style="width:45px">ID</th>
+                <th style="width:80px">解析</th>
                 <th style="width:16%">{{ sort_link('title', '标题') }}</th>
                 <th style="width:70px">{{ sort_link('noticeType', '类型') }}</th>
                 <th style="width:85px">{{ sort_link('publishDate', '发布日期') }}</th>
@@ -85,19 +97,41 @@
                 <th style="width:80px">搜索词</th>
                 <th style="width:60px">{{ sort_link('relevanceScore', '相关') }}</th>
                 <th style="width:85px">{{ sort_link('createdAt', '抓取时间') }}</th>
-                <th style="width:90px">操作</th>
+                <th style="width:120px">操作</th>
             </tr>
         </thead>
         <tbody>
             {% for r in items %}
-            <tr data-id="{{ r.id }}">
-                <td><input type="checkbox" class="row-check" value="{{ r.id }}" onclick="updateBatch()"></td>
-                <td>{{ r.id }}</td>
-                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.title or '' }}">
-                    <a href="{{ url_for('admin.parsed_detail', pid=r.id) }}" style="color:#1890ff;">{{ r.title or '-' }}</a>
+            <tr data-id="{{ r.id or '' }}">
+                <td>
+                    {% if r.id %}
+                    <input type="checkbox" class="row-check" value="{{ r.id }}" onclick="updateBatch()">
+                    {% endif %}
                 </td>
                 <td style="font-size:11px; text-align:center;">
-                    {% if r.noticeType %}
+                    {% if r.parseStatus == 'parsed' %}
+                        <span class="meta-tag" style="background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f;font-size:11px;padding:1px 5px;">已解析</span>
+                    {% elif r.parseStatus == 'error' %}
+                        <span class="meta-tag" style="background:#fff1f0;color:#ff4d4f;border:1px solid #ffa39e;font-size:11px;padding:1px 5px;" title="{{ r.parseErrors or '解析失败' }}">报错</span>
+                    {% elif r.parseStatus == 'unparsed' %}
+                        <span class="meta-tag" style="background:#fafafa;color:#999;border:1px dashed #d9d9d9;font-size:11px;padding:1px 5px;" title="原始 HTML 已下载，待解析">待解析</span>
+                    {% else %}
+                        <span class="meta-tag" style="background:#fffbe6;color:#d48806;border:1px dashed #ffd591;font-size:11px;padding:1px 5px;" title="只有 SearchResult，HTML 还没抓回来">待抓取</span>
+                    {% endif %}
+                </td>
+                <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ r.title or '' }}">
+                    {% if r.id %}
+                    <a href="{{ url_for('admin.parsed_detail', pid=r.id) }}" style="color:#1890ff;">{{ r.title or '-' }}</a>
+                    {% else %}
+                    <a href="{{ r.url }}" target="_blank" rel="noopener" style="color:#666;">{{ r.title or '-' }}</a>
+                    {% endif %}
+                </td>
+                <td style="font-size:11px; text-align:center;">
+                    {% if r.noticeType == 'list_page' %}
+                    <span class="meta-tag" style="background:#e0e0e022;color:#888;border:1px solid #bbb;font-size:11px;padding:1px 5px;" title="{{ r.parseErrors or '命中列表聚合页特征' }}">列表页</span>
+                    {% elif r.noticeType == 'search_serp' %}
+                    <span class="meta-tag" style="background:#fff7e6;color:#d46b08;border:1px solid #ffd591;font-size:11px;padding:1px 5px;" title="{{ r.parseErrors or '搜索引擎结果页（如百度/Bing/Google）' }}">搜索页</span>
+                    {% elif r.noticeType %}
                     {% set nt_colors = {'招标':'#1890ff','中标':'#52c41a','变更公告':'#faad14','废标公告':'#ff4d4f','采购意向':'#722ed1','预招标':'#13c2c2','合同':'#eb2f96','验收公告':'#87d068'} %}
                     <span class="meta-tag" style="background:{{ nt_colors.get(r.noticeType, '#999') }}22;color:{{ nt_colors.get(r.noticeType, '#999') }};border:1px solid {{ nt_colors.get(r.noticeType, '#999') }}88;font-size:11px;padding:1px 5px;">{{ r.noticeType }}</span>
                     {% else %}-{% endif %}
@@ -127,7 +161,7 @@
                     {% if r.isRelevant == true %}
                     <span style="color:#52c41a;" title="相关度: {{ r.relevanceScore }}&#10;匹配: {{ r.matchedKeywords }}">✔ {{ r.relevanceScore }}</span>
                     {% elif r.isRelevant == false %}
-                    <span style="color:#ccc;">✘</span>
+                    <span style="color:#ccc;" title="{{ r.parseErrors or '不相关' }}">✘</span>
                     {% else %}
                     <span style="color:#ccc;">-</span>
                     {% endif %}
@@ -137,40 +171,53 @@
                 </td>
                 <td style="white-space:nowrap;">
                     <a href="{{ r.url }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="font-size:11px; padding:2px 6px;" title="{{ r.url }}">原文</a>
+                    {% if r.parseStatus != 'parsed' %}
+                    <form method="post" action="{{ url_for('admin.parse_one_url') }}" style="display:inline;">
+                        <input type="hidden" name="url" value="{{ r.url }}">
+                        {% if r.parseStatus == 'unfetched' %}
+                        <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px; padding:2px 6px; color:#d48806;" title="同步抓取 HTML 并解析">抓取</button>
+                        {% else %}
+                        <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px; padding:2px 6px; color:#1890ff;" title="对该页面单独触发解析">解析</button>
+                        {% endif %}
+                    </form>
+                    {% endif %}
+                    {% if r.id %}
                     <button type="button" class="btn btn-danger btn-sm" style="font-size:11px; padding:2px 6px;"
                             onclick="ajaxDelete('{{ url_for('admin.parsed_delete', pid=r.id) }}', this)">删除</button>
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
             {% if not items %}
             <tr>
-                <td colspan="13" style="text-align:center; padding:40px; color:#999;">暂无解析结果，请先启动解析</td>
+                <td colspan="14" style="text-align:center; padding:40px; color:#999;">暂无数据</td>
             </tr>
             {% endif %}
         </tbody>
     </table>
 
     {% if total_pages > 1 %}
+    {% set common_qs = {'q': q, 'bidder': bidder_q, 'location': location_q, 'url': url_q, 'relevant': relevant_q, 'notice_type': notice_type_q, 'parse_status': parse_status_q, 'sort': sort_by, 'dir': sort_dir, 'per_page': per_page} %}
     <div class="pagination" style="margin-top:20px;">
         {% if page > 1 %}
-        <a href="{{ url_for('admin.parsed_list', page=page-1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">&laquo;</a>
+        <a href="{{ url_for('admin.parsed_list', page=page-1, **common_qs) }}" class="page-link">&laquo;</a>
         {% endif %}
         {% set sp = [1, page - 3] | max %}
         {% set ep = [total_pages, page + 3] | min %}
         {% if sp > 1 %}
-        <a href="{{ url_for('admin.parsed_list', page=1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">1</a>
+        <a href="{{ url_for('admin.parsed_list', page=1, **common_qs) }}" class="page-link">1</a>
         {% if sp > 2 %}<span class="page-info">...</span>{% endif %}
         {% endif %}
         {% for p in range(sp, ep + 1) %}
-        <a href="{{ url_for('admin.parsed_list', page=p, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}"
+        <a href="{{ url_for('admin.parsed_list', page=p, **common_qs) }}"
            class="page-link" style="{{ 'background:#e65c00;color:#fff;border-color:#e65c00;' if p == page else '' }}">{{ p }}</a>
         {% endfor %}
         {% if ep < total_pages %}
         {% if ep < total_pages - 1 %}<span class="page-info">...</span>{% endif %}
-        <a href="{{ url_for('admin.parsed_list', page=total_pages, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">{{ total_pages }}</a>
+        <a href="{{ url_for('admin.parsed_list', page=total_pages, **common_qs) }}" class="page-link">{{ total_pages }}</a>
         {% endif %}
         {% if page < total_pages %}
-        <a href="{{ url_for('admin.parsed_list', page=page+1, q=q, bidder=bidder_q, location=location_q, relevant=relevant_q, sort=sort_by, dir=sort_dir, per_page=per_page) }}" class="page-link">&raquo;</a>
+        <a href="{{ url_for('admin.parsed_list', page=page+1, **common_qs) }}" class="page-link">&raquo;</a>
         {% endif %}
         <span class="page-info">{{ page }}/{{ total_pages }}</span>
     </div>

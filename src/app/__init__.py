@@ -15,6 +15,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# 静音掉这些噪声日志，避免淹没爬虫/解析的关键日志
+for _noisy in ("httpx", "httpcore", "urllib3.connectionpool", "asyncio"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 CST = timezone(timedelta(hours=8))
 
 
