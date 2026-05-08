@@ -29,6 +29,9 @@ data/
 shangji-bao-release/
 shangji-bao-*.tar.gz
 
+# 离线 Docker 镜像 tar 包（GB 级，单独传给客户）
+docker-images-offline/*.tar
+
 # 模型文件
 *.bin
 *.ftz

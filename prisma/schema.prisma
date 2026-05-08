@@ -163,6 +163,9 @@ model SearchResult {
   @@index([sourceType])
   @@index([searchQuery])
   @@index([publishDate])
+  // /admin/results、/admin/parsed 默认按 createdAt DESC 排序+分页，
+  // 没有这个索引会扫全表+排序，深页 (skip 大) 会非常慢
+  @@index([createdAt])
   @@map("search_results")
 }
 

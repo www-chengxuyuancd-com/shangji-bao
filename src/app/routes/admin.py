@@ -1,3 +1,4 @@
+import time
 from functools import wraps
 
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify
@@ -6,6 +7,29 @@ from src.config import get_config
 from src.db.prisma_client import get_prisma
 
 admin_bp = Blueprint("admin", __name__)
+
+
+# raw_pages 全集合 count 在客户机上很慢（5GB+ 集合，无索引），缓存 30s。
+_MONGO_COUNT_CACHE: dict = {"value": 0, "at": 0.0}
+_MONGO_COUNT_TTL = 30.0
+
+
+def _get_mongo_raw_pages_count_cached(raw_pages_coll) -> int:
+    """raw_pages 总文档数，30 秒进程内缓存。任何线程调用都安全（GIL 保护 dict 写入）。"""
+    now = time.time()
+    if now - _MONGO_COUNT_CACHE["at"] < _MONGO_COUNT_TTL and _MONGO_COUNT_CACHE["value"] > 0:
+        return _MONGO_COUNT_CACHE["value"]
+    try:
+        # estimated_document_count() 直接读元数据，比 count_documents({}) 快几个数量级
+        n = raw_pages_coll.estimated_document_count()
+    except Exception:
+        try:
+            n = raw_pages_coll.count_documents({})
+        except Exception:
+            n = 0
+    _MONGO_COUNT_CACHE["value"] = n
+    _MONGO_COUNT_CACHE["at"] = now
+    return n
 
 
 def login_required(f):
@@ -716,9 +740,12 @@ def parsed_list():
     sort_dir = request.args.get("dir", "desc")
 
     # ---- 全局统计 ----
+    # mongo 的 raw_pages 集合很大（5GB+），count_documents({}) 在客户机上会
+    # 慢到 5~30s（无索引扫全集合 + I/O）。这里做一个进程内缓存：30 秒内复用，
+    # 牺牲一点点新鲜度换取页面打开秒级响应。
     search_total = prisma.searchresult.count()
     parsed_total = prisma.parsedresult.count()
-    mongo_total = 0
+
     raw_pages = None
     mc = None
     try:
@@ -726,9 +753,10 @@ def parsed_list():
         mc = MongoClient(uri, serverSelectionTimeoutMS=2000)
         mdb = mc.get_default_database()
         raw_pages = mdb["raw_pages"]
-        mongo_total = raw_pages.count_documents({})
+        mongo_total = _get_mongo_raw_pages_count_cached(raw_pages)
     except Exception:
         raw_pages = None
+        mongo_total = 0
     unparsed_total = max(0, mongo_total - parsed_total)
     unfetched_total = max(0, search_total - mongo_total)
 
