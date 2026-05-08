@@ -226,12 +226,33 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
 
         stats = {"prepared": 0, "skipped": 0, "existing": 0, "errors": []}
 
+        # 一次性把每个 channel 已经存过的 urlHash 拉到内存，避免
+        # 在循环里对每条 item × 每个 channel 都 find_first（N×M 次 PG 查询）。
+        existing_by_channel: dict[int, set[str]] = {}
         for ch in channels:
-            for item in all_items:
-                existing = prisma.notifymessage.find_first(
-                    where={"channelId": ch.id, "urlHash": item.urlHash}
+            BATCH = 5000
+            offset = 0
+            seen: set[str] = set()
+            while True:
+                page = prisma.notifymessage.find_many(
+                    where={"channelId": ch.id},
+                    skip=offset, take=BATCH,
                 )
-                if existing:
+                if not page:
+                    break
+                for m in page:
+                    if m.urlHash:
+                        seen.add(m.urlHash)
+                if len(page) < BATCH:
+                    break
+                offset += BATCH
+            existing_by_channel[ch.id] = seen
+            logger.info("[notify-prepare] channel=%s 已存在 %d 条", ch.id, len(seen))
+
+        for ch in channels:
+            ch_seen = existing_by_channel.get(ch.id, set())
+            for item in all_items:
+                if item.urlHash in ch_seen:
                     stats["existing"] += 1
                     continue
 

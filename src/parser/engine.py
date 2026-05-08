@@ -98,8 +98,21 @@ def parse_one(html: str, url: str, context: dict) -> dict:
     return result
 
 
+def _maybe_log_parse_progress(done, total, parsed_count, error_count, last_log_at, lg):
+    """打一行进度日志（包含 ETA / 速率），不让 UI 看着像卡死。"""
+    import time as _t
+    now = _t.time()
+    pct = (done * 100.0 / total) if total else 0.0
+    lg.info(
+        "[parse-job] 进度 %d/%d (%.1f%%) 已写入=%d 错误=%d",
+        done, total, pct, parsed_count, error_count,
+    )
+
+
 def _run_parse_job(job_id: int):
     """在子进程中执行的解析任务。"""
+    import time as _time
+
     prisma = Prisma()
     prisma.connect()
 
@@ -116,154 +129,204 @@ def _run_parse_job(job_id: int):
 
         user_keywords = [kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})]
 
-        # 不再按 meta.source_type 过滤——任何 raw_page 只要还没解析就纳入解析队列。
-        # （历史上只解析 search_result/website，导致 gov_api 来源的详情页全部漏解析）
-        docs = list(raw_pages.find(
-            {},
-            {"_id": 1, "url": 1, "html": 1, "search_query": 1, "source_name": 1, "meta": 1},
-        ))
+        # 性能优化 1：先把"已成功解析"的 urlHash 拉到内存里。
+        #   一次 SQL ≈ 200ms；以前每条都做 find_unique = N×1ms RPC，跑 2 万条要 20s+。
+        #   更重要的是：跳过的页面甚至不需要从 mongo 读取 HTML（5GB+ 的 raw_pages
+        #   只读取真正要解析的那几千条 HTML），内存与 IO 大幅下降。
+        t0 = _time.time()
+        existing_ok_hashes: set[str] = set()
+        existing_err_map: dict[str, int] = {}  # urlHash -> ParsedResult.id（用于 update）
+        BATCH = 5000
+        offset = 0
+        while True:
+            chunk = prisma.parsedresult.find_many(
+                skip=offset, take=BATCH,
+                # 不带 where 直接拉全表，select 关键字段
+            )
+            if not chunk:
+                break
+            for pr in chunk:
+                if pr.parseErrors:
+                    existing_err_map[pr.urlHash] = pr.id
+                else:
+                    existing_ok_hashes.add(pr.urlHash)
+            if len(chunk) < BATCH:
+                break
+            offset += BATCH
+        logger.info(
+            "[parse-job] 预加载 ParsedResult 索引: 已成功 %d，失败可重试 %d (耗时 %.1fs)",
+            len(existing_ok_hashes), len(existing_err_map), _time.time() - t0,
+        )
 
-        total = len(docs)
+        # 性能优化 2：用 mongo 游标流式扫描 raw_pages，绝不一次性 list 出来。
+        #   raw_pages 总体积 5GB+ 一次性加载会让客户机直接 swap。
+        total = raw_pages.count_documents({})
         prisma.crawljob.update(
             where={"id": job_id},
             data={"totalPages": total},
         )
+        logger.info("[parse-job] 启动：raw_pages 总数 %d，先扫一遍跳过已解析的", total)
 
         done = 0
         parsed_count = 0
         error_count = 0
         error_logs = []
+        last_log_at = _time.time()
 
-        for doc in docs:
-            url = doc.get("url", "")
-            url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
+        cursor = raw_pages.find(
+            {},
+            {"_id": 1, "url": 1, "html": 1, "search_query": 1, "source_name": 1, "meta": 1},
+            # batch_size 让 mongo 一次往回拉 100 条，pymongo 默认 101，明确写避免歧义
+            batch_size=50,
+            no_cursor_timeout=True,
+        )
+        try:
+            for doc in cursor:
+                url = doc.get("url", "")
+                url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
 
-            existing = prisma.parsedresult.find_unique(where={"urlHash": url_hash})
-            # 已成功解析过的（parseErrors 为空）跳过；
-            # 之前失败/报错的（parseErrors 有内容）允许重试——这样修复了乱码 HTML 之后
-            # 重新点"启动解析"就能把历史 content_invalid 记录刷成正常解析结果。
-            if existing and not existing.parseErrors:
-                done += 1
-                continue
-
-            html = doc.get("html", "")
-            if not html or len(html) < 50:
-                done += 1
-                continue
-
-            meta = doc.get("meta", {})
-            context = {
-                "url": url,
-                "title": meta.get("title", ""),
-                "search_query": doc.get("search_query", ""),
-                "source_name": doc.get("source_name", ""),
-                "user_keywords": user_keywords,
-            }
-
-            try:
-                result = parse_one(html, url, context)
-
-                def _write(data: dict):
-                    """create 或 update（前者用 upsert 避免并发冲突）。"""
-                    if existing is not None:
-                        update_data = {k: v for k, v in data.items()
-                                       if k not in ("urlHash", "createdBy")}
-                        prisma.parsedresult.update(
-                            where={"id": existing.id},
-                            data=update_data,
+                # 已成功解析过的（parseErrors 为空）：直接跳过，不读 html、不进 PG
+                if url_hash in existing_ok_hashes:
+                    done += 1
+                    if done % 200 == 0:
+                        _maybe_log_parse_progress(
+                            done, total, parsed_count, error_count, last_log_at, logger,
                         )
-                    else:
-                        prisma.parsedresult.create(data=data)
+                        last_log_at = _time.time()
+                    continue
 
-                if result.get("_invalid"):
-                    _write({
-                        "url": url,
-                        "urlHash": url_hash,
-                        "mongoDocId": str(doc["_id"]),
-                        "title": context.get("title") or meta.get("title"),
-                        "searchQuery": context.get("search_query"),
-                        "sourceName": context.get("source_name"),
-                        "isRelevant": False,
-                        "parserVersion": PARSER_VERSION,
-                        "parseErrors": "\n".join(result.get("_errors", [])),
-                        "createdBy": "system",
-                    })
-                    error_count += 1
-                    error_logs.append(f"[{url[:60]}] 内容无效(JS/反爬)")
+                # 失败过的：允许重试，update 而不是 create
+                existing_id = existing_err_map.get(url_hash)
+                # 兼容 _write 里原来的 existing 对象语义：mock 一个最小对象
+                class _Stub:
+                    def __init__(self, pid): self.id = pid
+                existing = _Stub(existing_id) if existing_id else None
+
+                html = doc.get("html", "")
+                if not html or len(html) < 50:
                     done += 1
                     continue
 
-                if result.get("_listing"):
+                meta = doc.get("meta", {})
+                context = {
+                    "url": url,
+                    "title": meta.get("title", ""),
+                    "search_query": doc.get("search_query", ""),
+                    "source_name": doc.get("source_name", ""),
+                    "user_keywords": user_keywords,
+                }
+
+                try:
+                    result = parse_one(html, url, context)
+
+                    def _write(data: dict):
+                        """create 或 update。"""
+                        if existing is not None:
+                            update_data = {k: v for k, v in data.items()
+                                           if k not in ("urlHash", "createdBy")}
+                            prisma.parsedresult.update(
+                                where={"id": existing.id},
+                                data=update_data,
+                            )
+                        else:
+                            prisma.parsedresult.create(data=data)
+
+                    if result.get("_invalid"):
+                        _write({
+                            "url": url,
+                            "urlHash": url_hash,
+                            "mongoDocId": str(doc["_id"]),
+                            "title": context.get("title") or meta.get("title"),
+                            "searchQuery": context.get("search_query"),
+                            "sourceName": context.get("source_name"),
+                            "isRelevant": False,
+                            "parserVersion": PARSER_VERSION,
+                            "parseErrors": "\n".join(result.get("_errors", [])),
+                            "createdBy": "system",
+                        })
+                        error_count += 1
+                        error_logs.append(f"[{url[:60]}] 内容无效(JS/反爬)")
+                        done += 1
+                        continue
+
+                    if result.get("_listing"):
+                        _write({
+                            "url": url,
+                            "urlHash": url_hash,
+                            "mongoDocId": str(doc["_id"]),
+                            "title": context.get("title") or meta.get("title"),
+                            "searchQuery": context.get("search_query"),
+                            "sourceName": context.get("source_name"),
+                            "noticeType": "search_serp" if result.get("_search_serp") else "list_page",
+                            "isRelevant": False,
+                            "relevanceScore": 0.0,
+                            "parserVersion": PARSER_VERSION,
+                            "parseErrors": "\n".join(result.get("_errors", [])),
+                            "createdBy": "system",
+                        })
+                        parsed_count += 1
+                        done += 1
+                        continue
+
+                    amount_data = result.get("amount")
+                    amount_display = None
+                    amount_value = None
+                    if isinstance(amount_data, dict):
+                        amount_display = amount_data.get("display")
+                        amount_value = amount_data.get("value")
+
+                    relevance_data = result.get("relevance", {}) or {}
+
                     _write({
                         "url": url,
                         "urlHash": url_hash,
                         "mongoDocId": str(doc["_id"]),
-                        "title": context.get("title") or meta.get("title"),
+                        "title": result.get("title"),
+                        "summary": result.get("summary"),
+                        "publishDate": result.get("publish_date"),
+                        "bidder": result.get("bidder"),
+                        "location": result.get("location"),
+                        "bidStartTime": result.get("bid_start_time"),
+                        "bidEndTime": result.get("bid_end_time"),
+                        "amount": amount_display,
+                        "amountValue": amount_value,
+                        "contact": result.get("contact"),
                         "searchQuery": context.get("search_query"),
                         "sourceName": context.get("source_name"),
-                        # search_serp 单独打 tag，便于后续过滤这种"搜索引擎结果页"
-                        "noticeType": "search_serp" if result.get("_search_serp") else "list_page",
-                        "isRelevant": False,
-                        "relevanceScore": 0.0,
+                        "noticeType": result.get("notice_type"),
+                        "isRelevant": relevance_data.get("is_relevant"),
+                        "relevanceScore": relevance_data.get("score"),
+                        "matchedKeywords": relevance_data.get("matched"),
                         "parserVersion": PARSER_VERSION,
-                        "parseErrors": "\n".join(result.get("_errors", [])),
+                        "parseErrors": "\n".join(result.get("_errors", [])) or None,
                         "createdBy": "system",
                     })
                     parsed_count += 1
-                    done += 1
-                    continue
 
-                amount_data = result.get("amount")
-                amount_display = None
-                amount_value = None
-                if isinstance(amount_data, dict):
-                    amount_display = amount_data.get("display")
-                    amount_value = amount_data.get("value")
+                except Exception as e:
+                    error_count += 1
+                    msg = f"[{url[:80]}] {e}"
+                    error_logs.append(msg)
+                    logger.warning("Parse error: %s", msg)
 
-                relevance_data = result.get("relevance", {}) or {}
-
-                _write({
-                    "url": url,
-                    "urlHash": url_hash,
-                    "mongoDocId": str(doc["_id"]),
-                    "title": result.get("title"),
-                    "summary": result.get("summary"),
-                    "publishDate": result.get("publish_date"),
-                    "bidder": result.get("bidder"),
-                    "location": result.get("location"),
-                    "bidStartTime": result.get("bid_start_time"),
-                    "bidEndTime": result.get("bid_end_time"),
-                    "amount": amount_display,
-                    "amountValue": amount_value,
-                    "contact": result.get("contact"),
-                    "searchQuery": context.get("search_query"),
-                    "sourceName": context.get("source_name"),
-                    "noticeType": result.get("notice_type"),
-                    "isRelevant": relevance_data.get("is_relevant"),
-                    "relevanceScore": relevance_data.get("score"),
-                    "matchedKeywords": relevance_data.get("matched"),
-                    "parserVersion": PARSER_VERSION,
-                    "parseErrors": "\n".join(result.get("_errors", [])) or None,
-                    "createdBy": "system",
-                })
-                parsed_count += 1
-
-            except Exception as e:
-                error_count += 1
-                msg = f"[{url[:80]}] {e}"
-                error_logs.append(msg)
-                logger.warning("Parse error: %s", msg)
-
-            done += 1
-            if done % 20 == 0:
-                prisma.crawljob.update(
-                    where={"id": job_id},
-                    data={
-                        "donePages": done,
-                        "resultCount": parsed_count,
-                        "errorCount": error_count,
-                    },
-                )
+                done += 1
+                # 进度更新与日志：每 20 条更新一次 DB；每 5s 打一次 INFO 让用户能看到节奏
+                if done % 20 == 0:
+                    prisma.crawljob.update(
+                        where={"id": job_id},
+                        data={
+                            "donePages": done,
+                            "resultCount": parsed_count,
+                            "errorCount": error_count,
+                        },
+                    )
+                if _time.time() - last_log_at >= 5.0:
+                    _maybe_log_parse_progress(
+                        done, total, parsed_count, error_count, last_log_at, logger,
+                    )
+                    last_log_at = _time.time()
+        finally:
+            cursor.close()
 
         prisma.crawljob.update(
             where={"id": job_id},
