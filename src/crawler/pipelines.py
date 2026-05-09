@@ -51,19 +51,17 @@ class MongoStoragePipeline:
         self.client.close()
 
     def process_item(self, item, spider):
-        html = item.get("html", "")
-        content_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
-
-        result = self.collection.insert_one({
-            "url": item["url"],
-            "html": html,
-            "content_hash": content_hash,
-            "meta": {
-                "title": item.get("title", ""),
-                "source_type": item.get("source_type", ""),
-            },
-        })
-        item["_mongo_doc_id"] = str(result.inserted_id)
+        from src.db.mongo import upsert_raw_page
+        doc_id = upsert_raw_page(
+            self.collection,
+            url=item["url"],
+            html=item.get("html", ""),
+            source_type=item.get("source_type", ""),
+            title=item.get("title", ""),
+            search_query=item.get("search_query", ""),
+            source_name=item.get("source_name", ""),
+        )
+        item["_mongo_doc_id"] = doc_id
         return item
 
 

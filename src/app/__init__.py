@@ -51,6 +51,13 @@ def create_app():
     with app.app_context():
         get_prisma()
 
+    # mongo raw_pages 上一次性建必要索引（首次启动几十秒，之后命中缓存）
+    try:
+        from src.db.mongo import ensure_raw_pages_indexes
+        ensure_raw_pages_indexes()
+    except Exception as e:
+        logging.getLogger(__name__).warning("ensure_raw_pages_indexes failed: %s", e)
+
     from src.app.routes.frontend import frontend_bp
     from src.app.routes.admin import admin_bp
     from src.app.api.search import api_bp

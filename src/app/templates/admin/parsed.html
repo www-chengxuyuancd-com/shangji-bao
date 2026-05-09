@@ -43,10 +43,9 @@
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
             <span style="font-size:13px; color:#666;">
                 抓取记录 <strong>{{ search_total }}</strong>
-                &nbsp;|&nbsp; 已下载HTML <strong>{{ mongo_total }}</strong>
-                &nbsp;|&nbsp; 已解析 <strong style="color:#52c41a;">{{ parsed_total }}</strong>
-                &nbsp;|&nbsp; 待解析 <strong style="color:{{ '#ff4d4f' if unparsed > 0 else '#52c41a' }};">{{ unparsed }}</strong>
-                &nbsp;|&nbsp; 待抓取 <strong style="color:{{ '#faad14' if unfetched > 0 else '#52c41a' }};" title="搜索结果里发现了 URL，但 HTML 还没下载下来（可能 force_url 当时失败）">{{ unfetched }}</strong>
+                &nbsp;|&nbsp; 已解析 <strong style="color:#52c41a;" title="ParsedResult 中无错误的条数">{{ parsed_total - unparsed }}</strong>
+                &nbsp;|&nbsp; 解析报错 <strong style="color:{{ '#ff4d4f' if unparsed > 0 else '#52c41a' }};" title="解析时被识别为搜索引擎结果页/反爬/无内容等，已记录 parseErrors">{{ unparsed }}</strong>
+                &nbsp;|&nbsp; 待抓取/待解析 <strong style="color:{{ '#faad14' if unfetched > 0 else '#52c41a' }};" title="SearchResult 里发现了 URL 但还没有 ParsedResult 记录">{{ unfetched }}</strong>
             </span>
             <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
                 <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('确定开始解析 MongoDB 中的原始页面？')">启动解析</button>

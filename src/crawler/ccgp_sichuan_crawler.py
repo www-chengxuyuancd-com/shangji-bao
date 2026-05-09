@@ -75,16 +75,13 @@ def _parse_dt(s: str | None) -> datetime | None:
 
 def _save_raw_page(collection, url: str, html: str, source_type: str,
                    title: str = "", search_query: str = "", source_name: str = ""):
-    content_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
-    collection.insert_one({
-        "url": url,
-        "html": html,
-        "content_hash": content_hash,
-        "crawled_at": datetime.now(timezone.utc),
-        "search_query": search_query,
-        "source_name": source_name,
-        "meta": {"title": title, "source_type": source_type},
-    })
+    """按 url upsert 到 raw_pages（统一封装在 src.db.mongo.upsert_raw_page）。"""
+    from src.db.mongo import upsert_raw_page
+    upsert_raw_page(
+        collection, url=url, html=html,
+        source_type=source_type, title=title,
+        search_query=search_query, source_name=source_name,
+    )
 
 
 def _extract_id_from_url(url: str) -> str | None:

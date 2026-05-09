@@ -740,11 +740,17 @@ def parsed_list():
     sort_dir = request.args.get("dir", "desc")
 
     # ---- 全局统计 ----
-    # mongo 的 raw_pages 集合很大（5GB+），count_documents({}) 在客户机上会
-    # 慢到 5~30s（无索引扫全集合 + I/O）。这里做一个进程内缓存：30 秒内复用，
-    # 牺牲一点点新鲜度换取页面打开秒级响应。
+    # 全部走 PG count（毫秒级），不再扫 mongo（mongo 在客户机上有大量 url 重复，
+    # count_documents 既慢又会算出"待解析 20 万"这种被重复 doc 干扰的伪数字）。
+    #   抓取记录 = SearchResult 总数（按 urlHash 唯一）
+    #   已解析  = ParsedResult.parseErrors=NULL 的条数
+    #   解析报错 = ParsedResult.parseErrors IS NOT NULL 的条数
+    #   待抓取  = SearchResult 里 ParsedResult 还没记录的（约等于"还没开始解析"）
+    # mongo_total 仍取 estimated 用于内部诊断，不再展示在 UI 上。
     search_total = prisma.searchresult.count()
-    parsed_total = prisma.parsedresult.count()
+    parsed_ok_total = prisma.parsedresult.count(where={"parseErrors": None})
+    parsed_err_total = prisma.parsedresult.count(where={"parseErrors": {"not": None}})
+    parsed_total = parsed_ok_total + parsed_err_total
 
     raw_pages = None
     mc = None
@@ -757,8 +763,13 @@ def parsed_list():
     except Exception:
         raw_pages = None
         mongo_total = 0
-    unparsed_total = max(0, mongo_total - parsed_total)
-    unfetched_total = max(0, search_total - mongo_total)
+
+    # 待抓取 ≈ SearchResult 数 - ParsedResult 数（按 urlHash 一一对应，差值就是
+    # 还没解析过的 url 数；注意这里有一种边界情况：parsedresult 偶尔多于
+    # searchresult（早期 gov_api 没回写 SearchResult），用 max(0, ...) 兜底。
+    unfetched_total = max(0, search_total - parsed_total)
+    # 兼容旧模板字段名：unparsed_total 用解析报错数代替
+    unparsed_total = parsed_err_total
 
     # ---- 列表查询：以 SearchResult 为主表 ----
     items = []

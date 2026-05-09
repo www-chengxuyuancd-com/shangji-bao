@@ -80,16 +80,13 @@ def _get_mongo_collection():
 
 
 def _save_raw_page(collection, url, html, source_type, title="", search_query="", source_name=""):
-    content_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
-    collection.insert_one({
-        "url": url,
-        "html": html,
-        "content_hash": content_hash,
-        "crawled_at": datetime.now(timezone.utc),
-        "search_query": search_query,
-        "source_name": source_name,
-        "meta": {"title": title, "source_type": source_type},
-    })
+    """按 url upsert 到 raw_pages（统一封装在 src.db.mongo.upsert_raw_page）。"""
+    from src.db.mongo import upsert_raw_page
+    upsert_raw_page(
+        collection, url=url, html=html,
+        source_type=source_type, title=title,
+        search_query=search_query, source_name=source_name,
+    )
 
 
 def fix_orphaned_jobs():
@@ -234,33 +231,61 @@ def _run_crawl_job(job_id: int, skip_queries: int = 0):
                 cur = parent
             return " ".join(parts)
 
+        # 调度策略：
+        #   1. 把 source 分成两批：网站类（定向爬虫，密度高）和搜索引擎类（辅助发现，量大且重复多）
+        #   2. 先全部跑网站类，再跑搜索引擎类
+        #      这样即使任务被中断/客户重启，至少网站类结果是齐的
+        #   3. 给每个 search_engine source 的 query 数加上限（默认 200），
+        #      避免一个 source 把 keyword × region × suffix 展开成上千个 query 独占资源
+        SE_MAX_QUERIES_PER_SOURCE = int(os.getenv("SE_MAX_QUERIES_PER_SOURCE", "200"))
+
+        site_sources = [s for s in sources if s.sourceCategory != "search_engine"]
+        se_sources = [s for s in sources if s.sourceCategory == "search_engine" and s.searchUrlTemplate]
+
         query_combos = []
-        for source in sources:
-            if source.sourceCategory == "search_engine" and source.searchUrlTemplate:
-                region_list = regions if regions else [None]
-                suffix_list = suffixes if suffixes else [None]
-                for kw in keywords:
-                    for region in region_list:
-                        for suffix in suffix_list:
-                            parts = [kw.keyword]
-                            if region:
-                                parts.append(_region_search_name(region))
-                            if suffix:
-                                parts.append(suffix.suffix)
-                            query_str = " ".join(parts)
-                            query_combos.append({
-                                "source": source,
-                                "query": query_str,
-                                "region": region,
-                                "max_pages": source.maxPages or 10,
-                            })
-            else:
-                query_combos.append({
-                    "source": source,
-                    "query": f"[BFS] {source.name}",
-                    "region": None,
-                    "max_pages": 0,
-                })
+
+        # ---- 网站类：每个 source 一个 combo（内部走 BFS / API / list_html 自有翻页） ----
+        for source in site_sources:
+            query_combos.append({
+                "source": source,
+                "query": f"[BFS] {source.name}",
+                "region": None,
+                "max_pages": 0,
+            })
+
+        # ---- 搜索引擎类：keyword × region × suffix 笛卡尔积，但每个 source 限量 ----
+        for source in se_sources:
+            region_list = regions if regions else [None]
+            suffix_list = suffixes if suffixes else [None]
+            se_combos_for_this_source: list[dict] = []
+            for kw in keywords:
+                for region in region_list:
+                    for suffix in suffix_list:
+                        parts = [kw.keyword]
+                        if region:
+                            parts.append(_region_search_name(region))
+                        if suffix:
+                            parts.append(suffix.suffix)
+                        query_str = " ".join(parts)
+                        se_combos_for_this_source.append({
+                            "source": source,
+                            "query": query_str,
+                            "region": region,
+                            "max_pages": source.maxPages or 10,
+                        })
+            if SE_MAX_QUERIES_PER_SOURCE > 0 and len(se_combos_for_this_source) > SE_MAX_QUERIES_PER_SOURCE:
+                logger.info(
+                    "[%s] 展开 %d 个 query，超过单 source 上限 %d，截断",
+                    source.name, len(se_combos_for_this_source), SE_MAX_QUERIES_PER_SOURCE,
+                )
+                se_combos_for_this_source = se_combos_for_this_source[:SE_MAX_QUERIES_PER_SOURCE]
+            query_combos.extend(se_combos_for_this_source)
+
+        logger.info(
+            "[crawl-job %d] 共 %d 个 query_combo: 网站类 %d 个（先跑），搜索引擎类 %d 个（后跑，单 source 上限 %d）",
+            job_id, len(query_combos), len(site_sources),
+            len(query_combos) - len(site_sources), SE_MAX_QUERIES_PER_SOURCE,
+        )
 
         total_pages = sum(
             c["max_pages"] if c["max_pages"] > 0 else 50
