@@ -109,8 +109,16 @@ def _maybe_log_parse_progress(done, total, parsed_count, error_count, last_log_a
     )
 
 
-def _run_parse_job(job_id: int):
-    """在子进程中执行的解析任务。"""
+def _run_parse_job(job_id: int, mode: str = "unparsed_and_errors"):
+    """
+    在子进程中执行的解析任务。
+
+    mode 控制处理范围：
+      - "unparsed_only"  ：只解析还没有 ParsedResult 的 url（包括 ok 和 error 的都跳过）
+      - "errors_only"    ：只重新处理 parseErrors 非空的 url
+      - "all"            ：重新解析所有 raw_pages（已成功的也会被覆盖）
+      - "unparsed_and_errors"（默认，兼容旧行为）：跳过已成功的，处理未解析+报错的
+    """
     import time as _time
 
     prisma = Prisma()
@@ -129,20 +137,19 @@ def _run_parse_job(job_id: int):
 
         user_keywords = [kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})]
 
-        # 性能优化 1：先把"已成功解析"的 urlHash 拉到内存里。
-        #   一次 SQL ≈ 200ms；以前每条都做 find_unique = N×1ms RPC，跑 2 万条要 20s+。
-        #   更重要的是：跳过的页面甚至不需要从 mongo 读取 HTML（5GB+ 的 raw_pages
-        #   只读取真正要解析的那几千条 HTML），内存与 IO 大幅下降。
+        # 把 ParsedResult 的 urlHash 索引拉到内存里：
+        #   - existing_ok_hashes: 已成功解析的（parseErrors=null）
+        #   - existing_err_map:   解析报错的 urlHash -> id（重试时 update 用）
+        # 一次 SQL ≈ 200ms；以前每条都做 find_unique = N×1ms RPC，跑 2 万条要 20s+。
+        # 更重要的是：跳过的页面甚至不需要从 mongo 读取 HTML（5GB+ 的 raw_pages
+        # 只读取真正要解析的那几千条 HTML），内存与 IO 大幅下降。
         t0 = _time.time()
         existing_ok_hashes: set[str] = set()
-        existing_err_map: dict[str, int] = {}  # urlHash -> ParsedResult.id（用于 update）
+        existing_err_map: dict[str, int] = {}
         BATCH = 5000
         offset = 0
         while True:
-            chunk = prisma.parsedresult.find_many(
-                skip=offset, take=BATCH,
-                # 不带 where 直接拉全表，select 关键字段
-            )
+            chunk = prisma.parsedresult.find_many(skip=offset, take=BATCH)
             if not chunk:
                 break
             for pr in chunk:
@@ -154,29 +161,44 @@ def _run_parse_job(job_id: int):
                 break
             offset += BATCH
         logger.info(
-            "[parse-job] 预加载 ParsedResult 索引: 已成功 %d，失败可重试 %d (耗时 %.1fs)",
-            len(existing_ok_hashes), len(existing_err_map), _time.time() - t0,
+            "[parse-job] mode=%s 预加载 ParsedResult 索引: 已成功 %d，失败可重试 %d (耗时 %.1fs)",
+            mode, len(existing_ok_hashes), len(existing_err_map), _time.time() - t0,
         )
 
-        # 性能优化 2：用 mongo 游标流式扫描 raw_pages，绝不一次性 list 出来。
-        #   raw_pages 总体积 5GB+ 一次性加载会让客户机直接 swap。
+        # 用 mongo 游标流式扫描 raw_pages，绝不一次性 list 出来。
+        # raw_pages 总体积 5GB+ 一次性加载会让客户机直接 swap。
         total = raw_pages.count_documents({})
         prisma.crawljob.update(
             where={"id": job_id},
             data={"totalPages": total},
         )
-        logger.info("[parse-job] 启动：raw_pages 总数 %d，先扫一遍跳过已解析的", total)
+        logger.info("[parse-job] 启动：raw_pages 总数 %d，mode=%s", total, mode)
 
         done = 0
         parsed_count = 0
         error_count = 0
+        skipped_count = 0
         error_logs = []
         last_log_at = _time.time()
+        last_progress_db_update_at = _time.time()
+
+        def _flush_progress():
+            """定期把进度写回 PG，让 UI 看得到节奏。"""
+            try:
+                prisma.crawljob.update(
+                    where={"id": job_id},
+                    data={
+                        "donePages": done,
+                        "resultCount": parsed_count,
+                        "errorCount": error_count,
+                    },
+                )
+            except Exception as _pe:
+                logger.warning("[parse-job] 写进度失败: %s", _pe)
 
         cursor = raw_pages.find(
             {},
             {"_id": 1, "url": 1, "html": 1, "search_query": 1, "source_name": 1, "meta": 1},
-            # batch_size 让 mongo 一次往回拉 100 条，pymongo 默认 101，明确写避免歧义
             batch_size=50,
             no_cursor_timeout=True,
         )
@@ -185,22 +207,59 @@ def _run_parse_job(job_id: int):
                 url = doc.get("url", "")
                 url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
 
-                # 已成功解析过的（parseErrors 为空）：直接跳过，不读 html、不进 PG
-                if url_hash in existing_ok_hashes:
+                in_ok = url_hash in existing_ok_hashes
+                in_err = url_hash in existing_err_map
+
+                # 根据 mode 决定本条跳过与否
+                skip = False
+                if mode == "unparsed_only":
+                    # 已经有任何 ParsedResult（不论成功失败）都跳过
+                    if in_ok or in_err:
+                        skip = True
+                elif mode == "errors_only":
+                    # 只处理报错的
+                    if not in_err:
+                        skip = True
+                elif mode == "all":
+                    pass  # 全部处理
+                else:  # unparsed_and_errors（默认）
+                    if in_ok:
+                        skip = True
+
+                if skip:
                     done += 1
-                    if done % 200 == 0:
+                    skipped_count += 1
+                    # ★ 关键修复：跳过分支里也要定期把 done 回写到 PG，
+                    # 否则前面 N 万条 ok 记录扫过去时 UI 永远停留在 0/0
+                    if (
+                        done % 500 == 0
+                        or _time.time() - last_progress_db_update_at >= 2.0
+                    ):
+                        _flush_progress()
+                        last_progress_db_update_at = _time.time()
+                    if _time.time() - last_log_at >= 5.0:
                         _maybe_log_parse_progress(
                             done, total, parsed_count, error_count, last_log_at, logger,
                         )
                         last_log_at = _time.time()
                     continue
 
-                # 失败过的：允许重试，update 而不是 create
-                existing_id = existing_err_map.get(url_hash)
-                # 兼容 _write 里原来的 existing 对象语义：mock 一个最小对象
+                # 走到这里说明这条要"做工"：决定是 update（已存在）还是 create
+                # mode=all 时已成功的也会落到这里，需要按已存在 update 而不是 create
+                if in_err:
+                    existing_id = existing_err_map.get(url_hash)
+                else:
+                    existing_id = None  # ok 路径在 all 模式下，需要回查 id 来 update
+
                 class _Stub:
                     def __init__(self, pid): self.id = pid
                 existing = _Stub(existing_id) if existing_id else None
+
+                # mode=all 且 in_ok：需要查一次拿到旧记录的 id，update 覆盖
+                if existing is None and in_ok:
+                    pr_old = prisma.parsedresult.find_unique(where={"urlHash": url_hash})
+                    if pr_old:
+                        existing = _Stub(pr_old.id)
 
                 html = doc.get("html", "")
                 if not html or len(html) < 50:
@@ -310,16 +369,10 @@ def _run_parse_job(job_id: int):
                     logger.warning("Parse error: %s", msg)
 
                 done += 1
-                # 进度更新与日志：每 20 条更新一次 DB；每 5s 打一次 INFO 让用户能看到节奏
-                if done % 20 == 0:
-                    prisma.crawljob.update(
-                        where={"id": job_id},
-                        data={
-                            "donePages": done,
-                            "resultCount": parsed_count,
-                            "errorCount": error_count,
-                        },
-                    )
+                # 进度回写：每 20 条 OR 距上次写超过 2s 就 flush 一次
+                if done % 20 == 0 or _time.time() - last_progress_db_update_at >= 2.0:
+                    _flush_progress()
+                    last_progress_db_update_at = _time.time()
                 if _time.time() - last_log_at >= 5.0:
                     _maybe_log_parse_progress(
                         done, total, parsed_count, error_count, last_log_at, logger,
@@ -327,6 +380,12 @@ def _run_parse_job(job_id: int):
                     last_log_at = _time.time()
         finally:
             cursor.close()
+            # 收尾再写一次最终进度
+            _flush_progress()
+            logger.info(
+                "[parse-job] 完成：扫描 %d/%d, 跳过 %d, 写入 %d, 报错 %d",
+                done, total, skipped_count, parsed_count, error_count,
+            )
 
         prisma.crawljob.update(
             where={"id": job_id},
@@ -363,17 +422,29 @@ def _run_parse_job(job_id: int):
         prisma.disconnect()
 
 
-def start_parse_job() -> int:
-    """创建并启动一个解析任务，返回 job_id。"""
+def start_parse_job(mode: str = "unparsed_and_errors") -> int:
+    """
+    创建并启动一个解析任务，返回 job_id。
+
+    mode:
+      - unparsed_only       仅解析未解析的（跳过已有 ParsedResult 的所有 url）
+      - errors_only         仅重解析报错的（parseErrors 非空）
+      - all                 重新解析全部 raw_pages
+      - unparsed_and_errors 默认：未解析 + 报错（已成功的跳过）
+    """
+    valid_modes = {"unparsed_only", "errors_only", "all", "unparsed_and_errors"}
+    if mode not in valid_modes:
+        mode = "unparsed_and_errors"
+
     prisma = Prisma()
     prisma.connect()
     job = prisma.crawljob.create(data={
         "status": "pending",
-        "triggerType": "parse",
+        "triggerType": f"parse:{mode}",
     })
     prisma.disconnect()
 
-    process = multiprocessing.Process(target=_run_parse_job, args=(job.id,), daemon=True)
+    process = multiprocessing.Process(target=_run_parse_job, args=(job.id, mode), daemon=True)
     process.start()
 
     return int(job.id)

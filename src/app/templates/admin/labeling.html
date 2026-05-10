@@ -26,8 +26,22 @@
             {% endif %}
         </span>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-            <form method="post" action="{{ url_for('admin.labeling_import') }}" style="display:inline;">
-                <button type="submit" class="btn btn-ghost btn-sm" onclick="return confirm('从解析结果中导入尚未导入的记录？')">从解析结果导入</button>
+            <form method="post" action="{{ url_for('admin.labeling_import') }}"
+                  style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+                         padding:6px 10px; background:#fafafa; border:1px solid #eee; border-radius:4px;">
+                <span style="font-size:12px; color:#666;">导入：</span>
+                <input type="text" name="domain" id="import-domain" list="domain-list" class="form-input"
+                       style="width:160px; font-size:12px;"
+                       placeholder="domain（可选，如 sc.gov.cn）"
+                       title="按域名后缀匹配，留空导入全部">
+                <datalist id="domain-list"></datalist>
+                <input type="number" name="limit" class="form-input" value="5000" min="1" max="100000"
+                       style="width:80px; font-size:12px;" title="最多导入多少条">
+                <label style="font-size:12px; color:#666; cursor:pointer;" title="包含列表页/搜索引擎页/解析报错的低质量数据">
+                    <input type="checkbox" name="include_low_quality" value="1" style="vertical-align:middle;"> 含低质量
+                </label>
+                <button type="submit" class="btn btn-primary btn-sm"
+                        onclick="return confirm('开始从解析结果导入未导入的记录？')">从解析结果导入</button>
             </form>
             <form method="post" action="{{ url_for('admin.labeling_train') }}" style="display:inline;">
                 <button type="submit" class="btn btn-sm {{ 'btn-ghost' if labeled_count < 50 else 'btn-primary' }}"
@@ -190,6 +204,24 @@
 </div>
 
 <script>
+// 页面加载时拉一份当前 SearchResult 中的域名列表，填充到导入面板的 datalist
+(function loadDomains() {
+    fetch('{{ url_for("admin.labeling_domains") }}', {headers:{'X-Requested-With':'XMLHttpRequest'}})
+    .then(function(r){return r.json();})
+    .then(function(d){
+        var list = document.getElementById('domain-list');
+        if (!list || !d.domains) return;
+        list.innerHTML = '';
+        d.domains.forEach(function(item){
+            var opt = document.createElement('option');
+            opt.value = item.domain;
+            opt.label = item.domain + ' (' + item.count + ')';
+            list.appendChild(opt);
+        });
+    })
+    .catch(function(){});
+})();
+
 function toggleDetail(id) {
     var row = document.getElementById('detail-' + id);
     row.style.display = row.style.display === 'none' ? '' : 'none';

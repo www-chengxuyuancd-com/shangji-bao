@@ -48,7 +48,24 @@
                 &nbsp;|&nbsp; 待抓取/待解析 <strong style="color:{{ '#faad14' if unfetched > 0 else '#52c41a' }};" title="SearchResult 里发现了 URL 但还没有 ParsedResult 记录">{{ unfetched }}</strong>
             </span>
             <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
-                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('确定开始解析 MongoDB 中的原始页面？')">启动解析</button>
+                <input type="hidden" name="mode" value="unparsed_only">
+                <button type="submit" class="btn btn-primary btn-sm"
+                        title="只处理 raw_pages 中尚未生成 ParsedResult 的 url"
+                        onclick="return confirm('解析未解析的数据：跳过所有已成功 + 已报错的，只新建 ParsedResult。继续？')">解析未解析</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
+                <input type="hidden" name="mode" value="errors_only">
+                <button type="submit" class="btn btn-sm"
+                        style="background:#fa8c16; color:#fff; border-color:#fa8c16;"
+                        title="只重跑 parseErrors 非空的，对修了 bug / 改了规则 之后非常合适"
+                        onclick="return confirm('重新解析报错的数据：只处理 parseErrors 非空的，更新现有 ParsedResult。继续？')">重新解析报错</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.parse_start') }}" style="display:inline;">
+                <input type="hidden" name="mode" value="all">
+                <button type="submit" class="btn btn-sm"
+                        style="background:#cf1322; color:#fff; border-color:#cf1322;"
+                        title="全量重解析所有 raw_pages，已成功的也会被覆盖"
+                        onclick="return confirm('重新解析全部数据：会覆盖所有 ParsedResult 包括已成功的，耗时较长。确定继续？')">重新解析全部</button>
             </form>
             <form method="post" action="{{ url_for('admin.parse_rejudge') }}" style="display:inline;">
                 <button type="submit" class="btn btn-sm {{ 'btn-primary' if model_exists else 'btn-ghost' }}"
@@ -101,10 +118,16 @@
         </thead>
         <tbody>
             {% for r in items %}
-            <tr data-id="{{ r.id or '' }}">
+            {# row 的复合 id：有 ParsedResult 则用 pr:N；否则用 sr:N（用于 unfetched 行从 SearchResult 删除） #}
+            {% set row_id = ('pr:' ~ r.id) if r.id else (('sr:' ~ r.sr_id) if r.sr_id else '') %}
+            <tr data-id="{{ row_id }}">
                 <td>
-                    {% if r.id %}
-                    <input type="checkbox" class="row-check" value="{{ r.id }}" onclick="updateBatch()">
+                    {% if row_id %}
+                    <input type="checkbox" class="row-check"
+                           value="{{ row_id }}"
+                           data-kind="{{ 'pr' if r.id else 'sr' }}"
+                           onclick="updateBatch()"
+                           title="{{ '解析结果记录' if r.id else 'SearchResult 记录（删除会同时移除该 URL）' }}">
                     {% endif %}
                 </td>
                 <td style="font-size:11px; text-align:center;">
@@ -247,9 +270,16 @@ function clearSelection() {
 }
 function batchDelete() {
     var ids = [];
-    document.querySelectorAll('.row-check:checked').forEach(function(cb){ids.push(parseInt(cb.value));});
+    var n_pr = 0, n_sr = 0;
+    document.querySelectorAll('.row-check:checked').forEach(function(cb){
+        ids.push(cb.value);
+        if (cb.dataset.kind === 'sr') n_sr++; else n_pr++;
+    });
     if (!ids.length) return;
-    if (!confirm('确定批量删除选中的 ' + ids.length + ' 条解析结果？')) return;
+    var msg = '确定批量删除选中的 ' + ids.length + ' 条';
+    if (n_sr > 0) msg += '（其中 ' + n_sr + ' 条为待抓取记录，将从 SearchResult 中删除）';
+    msg += '？';
+    if (!confirm(msg)) return;
     fetch('{{ url_for("admin.parsed_batch_delete") }}', {
         method:'POST',
         headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
@@ -258,7 +288,10 @@ function batchDelete() {
     .then(function(r){return r.json();})
     .then(function(d){
         if(d.ok){
-            ids.forEach(function(id){var row=document.querySelector('tr[data-id="'+id+'"]');if(row)row.remove();});
+            ids.forEach(function(id){
+                var row=document.querySelector('tr[data-id="'+id+'"]');
+                if(row) row.remove();
+            });
             updateBatch();
             showToast('已删除 '+d.deleted+' 条','success');
         } else {showToast(d.error||'删除失败','error');}

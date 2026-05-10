@@ -1039,9 +1039,23 @@ def _build_parsed_row(pr, mongo_doc, search_result=None) -> dict:
 @admin_bp.route("/parsed/start", methods=["POST"])
 @login_required
 def parse_start():
+    """
+    启动解析任务，mode 参数控制处理范围：
+      - unparsed_only:  仅解析未解析的
+      - errors_only:    仅重解析报错的
+      - all:            重新解析全部
+      - unparsed_and_errors（默认）：未解析 + 报错
+    """
     from src.parser.engine import start_parse_job
-    job_id = start_parse_job()
-    flash(f"解析任务已启动，任务 ID: {job_id}", "success")
+    mode = request.form.get("mode", "unparsed_and_errors")
+    job_id = start_parse_job(mode=mode)
+    mode_label = {
+        "unparsed_only": "解析未解析",
+        "errors_only": "重解析报错",
+        "all": "重新解析全部",
+        "unparsed_and_errors": "解析未解析+报错",
+    }.get(mode, mode)
+    flash(f"已启动「{mode_label}」任务，任务 ID: {job_id}", "success")
     return redirect(url_for("admin.parsed_list"))
 
 
@@ -1300,23 +1314,55 @@ def parsed_delete(pid):
 @admin_bp.route("/parsed/batch-delete", methods=["POST"])
 @login_required
 def parsed_batch_delete():
+    """
+    批量删除。ids 支持两种格式：
+      - 纯整数（旧格式）：当 ParsedResult.id 处理
+      - "pr:<int>"      ：删除 ParsedResult（连带 NotifyMessage / LabeledSample）
+      - "sr:<int>"      ：删除 SearchResult（用于 unfetched 状态的行）
+    """
     data = request.get_json(silent=True) or {}
     ids = data.get("ids", [])
     if not ids:
         return jsonify({"ok": False, "error": "未选择任何记录"}), 400
     prisma = get_prisma()
-    deleted = 0
-    for pid in ids:
+    deleted_pr = 0
+    deleted_sr = 0
+    for raw_id in ids:
         try:
-            item = prisma.parsedresult.find_unique(where={"id": int(pid)})
-            if item:
-                prisma.notifymessage.delete_many(where={"urlHash": item.urlHash})
-                prisma.labeledsample.delete_many(where={"urlHash": item.urlHash})
-                prisma.parsedresult.delete(where={"id": int(pid)})
-                deleted += 1
+            kind, sid = ("pr", int(raw_id)) if isinstance(raw_id, int) else None, None
+            if isinstance(raw_id, int):
+                kind, sid = "pr", raw_id
+            elif isinstance(raw_id, str):
+                if ":" in raw_id:
+                    k, v = raw_id.split(":", 1)
+                    if k in ("pr", "sr"):
+                        kind, sid = k, int(v)
+                    else:
+                        kind, sid = "pr", int(v)
+                else:
+                    kind, sid = "pr", int(raw_id)
+            else:
+                continue
+
+            if kind == "pr":
+                item = prisma.parsedresult.find_unique(where={"id": sid})
+                if item:
+                    prisma.notifymessage.delete_many(where={"urlHash": item.urlHash})
+                    prisma.labeledsample.delete_many(where={"urlHash": item.urlHash})
+                    prisma.parsedresult.delete(where={"id": sid})
+                    deleted_pr += 1
+            elif kind == "sr":
+                # 删 SearchResult 不删 ParsedResult（如果有的话），按需
+                prisma.searchresult.delete(where={"id": sid})
+                deleted_sr += 1
         except Exception:
             pass
-    return jsonify({"ok": True, "deleted": deleted})
+    return jsonify({
+        "ok": True,
+        "deleted": deleted_pr + deleted_sr,
+        "deleted_parsed": deleted_pr,
+        "deleted_searchresult": deleted_sr,
+    })
 
 
 # ==================== 消息通知 ====================
@@ -1742,12 +1788,81 @@ def labeling_list():
 @admin_bp.route("/labeling/import", methods=["POST"])
 @login_required
 def labeling_import():
-    import hashlib
+    """
+    从解析结果导入标注样本。
+
+    支持的 form 参数：
+      - limit  最多导入多少条（默认 5000，避免一次撑爆）
+      - domain 按域名后缀过滤；如填 "sc.gov.cn" 则匹配 *.sc.gov.cn
+      - include_low_quality:
+                "1" 表示也导入列表页/搜索引擎页/解析报错；默认不导入
+
+    导入策略：
+      1. 跳过已经存在 LabeledSample 的（按 urlHash 去重）
+      2. 默认跳过没有意义的内容（noticeType=list_page/search_serp、parseErrors 非空）
+      3. 按 createdAt desc 取最新的，先导新数据
+    """
     import os
     from pymongo import MongoClient
 
     prisma = get_prisma()
-    parsed_items = prisma.parsedresult.find_many(take=2000)
+
+    # ---- 表单参数 ----
+    try:
+        limit = int(request.form.get("limit", "5000") or "5000")
+    except ValueError:
+        limit = 5000
+    limit = max(1, min(limit, 100000))  # 0 < limit ≤ 10w，防呆
+
+    domain_filter = (request.form.get("domain", "") or "").strip().lower().lstrip(".")
+    include_low_quality = request.form.get("include_low_quality") == "1"
+
+    # ---- 用 SearchResult 找出符合 domain 的 urlHash 集合（如果填了 domain） ----
+    domain_hash_set: set[str] | None = None
+    if domain_filter:
+        # 按后缀匹配：domain 字段以 .domain_filter 结尾或等于 domain_filter
+        # 用 contains 做粗筛，再 Python 端做严格后缀匹配（避免 sc.gov.cn 匹中 abcsc.gov.cn）
+        candidates = prisma.searchresult.find_many(
+            where={"domain": {"contains": domain_filter}},
+        )
+        domain_hash_set = set()
+        for sr in candidates:
+            d = (sr.domain or "").lower()
+            if d == domain_filter or d.endswith("." + domain_filter):
+                if sr.urlHash:
+                    domain_hash_set.add(sr.urlHash)
+        if not domain_hash_set:
+            flash(f"没有找到 domain ≈ {domain_filter} 的 SearchResult", "warning")
+            return redirect(url_for("admin.labeling_list"))
+
+    # ---- 候选 ParsedResult 的 where 条件 ----
+    pr_where: dict = {}
+    if not include_low_quality:
+        pr_where["parseErrors"] = None
+        pr_where["noticeType"] = {"notIn": ["list_page", "search_serp"]}
+
+    # 已经导入过的 urlHash（一次性拉到内存，避免逐条 find_unique）
+    existing_hashes: set[str] = set()
+    BATCH = 5000
+    offset = 0
+    while True:
+        chunk = prisma.labeledsample.find_many(skip=offset, take=BATCH)
+        if not chunk:
+            break
+        for ls in chunk:
+            if ls.urlHash:
+                existing_hashes.add(ls.urlHash)
+        if len(chunk) < BATCH:
+            break
+        offset += BATCH
+
+    # 拉候选 ParsedResult；按最新优先
+    parsed_items = prisma.parsedresult.find_many(
+        where=pr_where,
+        order={"createdAt": "desc"},
+        # 多取一些以应对去重后 < limit
+        take=min(limit * 3, 100000),
+    )
 
     uri = os.getenv("MONGO_URI", "mongodb://mongodb:mongodb@localhost:27017/shangjibao?authSource=admin")
     mc = MongoClient(uri, serverSelectionTimeoutMS=3000)
@@ -1755,24 +1870,34 @@ def labeling_import():
     raw_pages = mdb["raw_pages"]
 
     imported = 0
-    skipped = 0
+    skipped_existing = 0
+    skipped_low_quality = 0
+    skipped_domain = 0
+
+    clean = lambda s: s.replace("\x00", "") if s else s
+
     for p in parsed_items:
-        existing = prisma.labeledsample.find_unique(where={"urlHash": p.urlHash})
-        if existing:
-            skipped += 1
+        if imported >= limit:
+            break
+        if p.urlHash in existing_hashes:
+            skipped_existing += 1
+            continue
+        if domain_hash_set is not None and p.urlHash not in domain_hash_set:
+            skipped_domain += 1
             continue
 
         content = None
         if p.mongoDocId:
-            from bson import ObjectId
-            doc = raw_pages.find_one({"_id": ObjectId(p.mongoDocId)})
-            if doc and doc.get("html"):
-                from src.parser.extractors import html_to_text
-                content = html_to_text(doc["html"])[:3000]
+            try:
+                from bson import ObjectId
+                doc = raw_pages.find_one({"_id": ObjectId(p.mongoDocId)})
+                if doc and doc.get("html"):
+                    from src.parser.extractors import html_to_text
+                    content = html_to_text(doc["html"])[:3000]
+            except Exception:
+                content = None
         if not content:
             content = p.summary or p.title or ""
-
-        clean = lambda s: s.replace("\x00", "") if s else s
 
         try:
             prisma.labeledsample.create(data={
@@ -1785,12 +1910,47 @@ def labeling_import():
                 "sourceName": clean(p.sourceName),
             })
             imported += 1
+            existing_hashes.add(p.urlHash)
         except Exception:
-            skipped += 1
+            skipped_existing += 1
 
     mc.close()
-    flash(f"导入完成: 新增 {imported} 条, 跳过 {skipped} 条已存在的", "success")
+
+    parts = [f"新增 {imported} 条"]
+    if skipped_existing:
+        parts.append(f"跳过 {skipped_existing} 条已存在")
+    if skipped_domain:
+        parts.append(f"跳过 {skipped_domain} 条非目标域名")
+    if domain_filter:
+        parts.append(f"domain≈{domain_filter}")
+    if include_low_quality:
+        parts.append("含低质量")
+    flash("导入完成: " + ", ".join(parts), "success")
     return redirect(url_for("admin.labeling_list"))
+
+
+@admin_bp.route("/labeling/domains")
+@login_required
+def labeling_domains():
+    """
+    返回当前 SearchResult 中出现过的根域名（去掉 www. 前缀的 host），
+    给标注页面的"按域名导入"下拉用。
+    JSON 响应： {"domains": [{"domain": "sc.gov.cn", "count": 1234}, ...]}
+    """
+    prisma = get_prisma()
+    rows = prisma.query_raw(
+        """
+        SELECT
+            COALESCE(domain, '') AS domain,
+            COUNT(*) AS count
+        FROM search_results
+        WHERE domain IS NOT NULL AND domain <> ''
+        GROUP BY domain
+        ORDER BY COUNT(*) DESC
+        LIMIT 200
+        """
+    )
+    return jsonify({"domains": [{"domain": r["domain"], "count": int(r["count"])} for r in rows]})
 
 
 @admin_bp.route("/labeling/<int:sid>/label", methods=["POST"])
