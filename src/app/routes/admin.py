@@ -2134,6 +2134,114 @@ def labeling_ai_predict_one():
     return jsonify({"ok": True, "id": int(sid), "label": result["label"], "reason": result.get("reason", "")})
 
 
+@admin_bp.route("/labeling/ambiguous", methods=["GET"])
+@login_required
+def labeling_ambiguous():
+    """按 BERT 预测分数取最摇摆（接近 0.5）的未标注样本。
+
+    Query params:
+        scan_size   候选池大小，从未标注样本中拉取的最大条数，默认 500
+        take        返回前 N 条最摇摆样本，默认 50
+        low         分数下界（含），默认 0.3
+        high        分数上界（含），默认 0.7
+        search_query/title/url   可选过滤
+    """
+    from src.classifier.bert_predictor import BertRelevancePredictor
+
+    prisma = get_prisma()
+
+    try:
+        scan_size = int(request.args.get("scan_size", "500"))
+    except ValueError:
+        scan_size = 500
+    try:
+        take = int(request.args.get("take", "50"))
+    except ValueError:
+        take = 50
+    try:
+        low = float(request.args.get("low", "0.3"))
+    except ValueError:
+        low = 0.3
+    try:
+        high = float(request.args.get("high", "0.7"))
+    except ValueError:
+        high = 0.7
+    scan_size = max(20, min(scan_size, 5000))
+    take = max(5, min(take, 500))
+
+    predictor = BertRelevancePredictor.get_instance()
+    if not predictor.available:
+        return jsonify({
+            "ok": False,
+            "error": "BERT 模型未训练或加载失败，请先训练 BERT",
+        }), 400
+
+    where: dict = {"label": None}
+    sq = request.args.get("sq", "").strip()
+    title_q = request.args.get("title", "").strip()
+    url_q = request.args.get("url", "").strip()
+    if sq:
+        where["searchQuery"] = {"contains": sq}
+    if title_q:
+        where["title"] = {"contains": title_q}
+    if url_q:
+        where["url"] = {"contains": url_q}
+
+    candidates = prisma.labeledsample.find_many(
+        where=where,
+        order={"createdAt": "desc"},
+        take=scan_size,
+    )
+    if not candidates:
+        return jsonify({
+            "ok": True, "items": [], "scanned": 0, "in_range": 0,
+            "scan_size": scan_size, "take": take, "low": low, "high": high,
+        })
+
+    texts = [
+        ((s.title or "") + " [SEP] " + (s.content or "")[:500]).strip(" [SEP] ")
+        for s in candidates
+    ]
+    titles = [s.title or "" for s in candidates]
+    preds = predictor.predict_batch(texts, titles, batch_size=64)
+
+    scored: list[tuple[float, object]] = []
+    for s, p in zip(candidates, preds):
+        if p is None:
+            continue
+        score = float(p["score"])
+        if low <= score <= high:
+            scored.append((score, s))
+
+    # 按"摇摆程度"排序：|score - 0.5| 升序，越接近 0.5 越靠前
+    scored.sort(key=lambda x: abs(x[0] - 0.5))
+    top = scored[:take]
+
+    items_out = []
+    for score, s in top:
+        items_out.append({
+            "id": int(s.id),
+            "title": s.title or "",
+            "url": s.url,
+            "search_query": s.searchQuery or "",
+            "source_name": s.sourceName or "",
+            "content_preview": (s.content or "")[:500],
+            "bert_score": round(score, 4),
+            "labeled_by": s.labeledBy or "",
+        })
+
+    return jsonify({
+        "ok": True,
+        "items": items_out,
+        "scanned": len(candidates),
+        "in_range": len(scored),
+        "scan_size": scan_size,
+        "take": take,
+        "low": low,
+        "high": high,
+    })
+
+
 # ==================== 大模型配置 ====================
 
 @admin_bp.route("/llm-config")

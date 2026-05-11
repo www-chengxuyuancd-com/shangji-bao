@@ -24,10 +24,75 @@ _CHARSET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 标题相关的多套提取规则，按优先级排序
+_TITLE_TAG_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_META_ARTICLE_TITLE_RE = re.compile(
+    r'<meta\s+name\s*=\s*["\']ArticleTitle["\']\s+content\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_META_OG_TITLE_RE = re.compile(
+    r'<meta\s+property\s*=\s*["\']og:title["\']\s+content\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+# 反爬/空内容/错误页常见特征（命中则视为抓取失败，不写入空标题）
+_ANTIBOT_PATTERNS = (
+    "请完成安全验证", "请完成验证", "访问太频繁", "访问过于频繁",
+    "请输入验证码", "verification required", "are you a human",
+    "您的访问出错了", "您访问的页面不存在", "页面找不到",
+    "稍后重试", "robot check", "请稍后再试",
+)
+
+# requests 默认对没有 charset 的响应回退到 ISO-8859-1，我们要把它当成"未知编码"
+_LATIN_FALLBACKS = ("iso88591", "latin1", "latin-1")
+
+# 抓取通用页面用的 headers：带 Referer/Accept-Encoding，对政府站更友好
+_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def _build_request_headers(url: str) -> dict:
+    """根据目标 URL 构造请求头，自动加上同站 Referer，提高被某些政府站接受的概率。"""
+    headers = dict(_FETCH_HEADERS)
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+    except Exception:
+        pass
+    return headers
+
 
 def _decode_response(resp) -> str:
+    """智能解码 requests 响应。
+
+    顺序：
+      1. response.encoding（若不是 ISO-8859-1 这种 RFC fallback）
+      2. <meta charset> 声明（覆盖 HTML4/HTML5 两种写法）
+      3. apparent_encoding（chardet 检测）
+      4. 常见中文编码暴力枚举
+      5. utf-8 with errors=replace（兜底）
+    """
     raw = resp.content
-    if resp.encoding and resp.encoding.lower().replace("-", "") not in ("iso88591", "latin1"):
+    if not raw:
+        return ""
+
+    if resp.encoding and resp.encoding.lower().replace("-", "") not in _LATIN_FALLBACKS:
         try:
             return raw.decode(resp.encoding)
         except (UnicodeDecodeError, LookupError):
@@ -40,19 +105,109 @@ def _decode_response(resp) -> str:
         head_str = ""
     m = _CHARSET_RE.search(head_str)
     if m:
-        charset = m.group(1).strip()
-        try:
-            return raw.decode(charset)
-        except (UnicodeDecodeError, LookupError):
-            pass
+        charset = m.group(1).strip().lower().replace("-", "")
+        if charset not in _LATIN_FALLBACKS:
+            try:
+                return raw.decode(m.group(1).strip())
+            except (UnicodeDecodeError, LookupError):
+                pass
 
-    for enc in ("utf-8", "gbk", "gb2312", "gb18030", "big5"):
+    try:
+        apparent = resp.apparent_encoding
+        if apparent and apparent.lower().replace("-", "") not in _LATIN_FALLBACKS:
+            return raw.decode(apparent)
+    except (UnicodeDecodeError, LookupError, AttributeError):
+        pass
+
+    for enc in ("utf-8", "gbk", "gb18030", "gb2312", "big5"):
         try:
             return raw.decode(enc)
         except (UnicodeDecodeError, LookupError):
             continue
 
     return raw.decode("utf-8", errors="replace")
+
+
+def _clean_title_text(s: str) -> str:
+    """清洗标题：去 HTML 标签、合并空白、去常见后缀。"""
+    if not s:
+        return ""
+    s = _HTML_TAG_RE.sub(" ", s)
+    s = s.replace("\xa0", " ").replace("\u3000", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    # 去常见站点名后缀（"xxx - 中国政府采购网" -> "xxx"），但保留主体
+    s = re.sub(
+        r"\s*[-_|｜·»]\s*(?:中国政府采购网|政府采购网|政采网|招标公告网|中国招标网|百度搜索|百度).*$",
+        "",
+        s,
+    )
+    return s.strip()[:500]
+
+
+def _extract_title_from_html(html: str, fallback: str = "") -> str:
+    """从 HTML 中按多套规则提取标题，命中第一条即返回。"""
+    if not html:
+        return fallback
+
+    m = _META_ARTICLE_TITLE_RE.search(html)
+    if m:
+        t = _clean_title_text(m.group(1))
+        if t and len(t) >= 4:
+            return t
+
+    m = _META_OG_TITLE_RE.search(html)
+    if m:
+        t = _clean_title_text(m.group(1))
+        if t and len(t) >= 4:
+            return t
+
+    m = _TITLE_TAG_RE.search(html)
+    if m:
+        t = _clean_title_text(m.group(1))
+        if t and len(t) >= 4 and not _is_generic_title(t):
+            return t
+
+    m = _H1_RE.search(html)
+    if m:
+        t = _clean_title_text(m.group(1))
+        if t and len(t) >= 4:
+            return t
+
+    return fallback
+
+
+# 通用站点 title（命中则倾向用 ArticleTitle/H1 等更精确的字段）
+_GENERIC_TITLE_PATTERNS = (
+    "中国政府采购网", "政府采购信息网", "招标采购导航",
+    "百度搜索", "bing", "google", "搜狗搜索", "360搜索",
+    "首页", "网站首页", "index", "untitled",
+)
+
+
+def _is_generic_title(t: str) -> bool:
+    if not t:
+        return True
+    low = t.lower().strip()
+    if len(low) < 4:
+        return True
+    for p in _GENERIC_TITLE_PATTERNS:
+        if low == p.lower() or low.endswith(p.lower()):
+            return True
+    return False
+
+
+def _looks_like_antibot_page(html: str) -> bool:
+    """识别反爬验证页 / 错误页。"""
+    if not html:
+        return True
+    if len(html) < 1024:
+        # 政府公告页正常都 >5KB，<1KB 多半是错误/拦截页
+        return True
+    snippet = html[:8192]
+    for kw in _ANTIBOT_PATTERNS:
+        if kw in snippet:
+            return True
+    return False
 
 
 def _extract_domain(url: str) -> str:
@@ -426,11 +581,11 @@ def _crawl_one_query(prisma, source, query_str, region, max_pages, raw_pages, tr
             )
             search_url_hash = hashlib.md5(search_url.encode("utf-8")).hexdigest()
 
-            resp = req.get(search_url, timeout=15, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            })
+            resp = req.get(
+                search_url, timeout=15,
+                headers=_build_request_headers(search_url),
+                allow_redirects=True,
+            )
 
             prisma.visitedurl.upsert(
                 where={"urlHash": search_url_hash},
@@ -463,10 +618,17 @@ def _crawl_one_query(prisma, source, query_str, region, max_pages, raw_pages, tr
 
 
 def _fetch_and_store_result(prisma, sr, source, query_str, region, raw_pages, tracker):
+    """抓单个搜索结果的详情页并入库。
+
+    标题选择优先级：
+      ArticleTitle meta > og:title > <title> > <h1> > 搜索引擎给的 title > URL
+    若识别为反爬/错误页，记 warning 并不创建 SearchResult。
+    抓取失败带一次轻量重试（去掉部分可疑请求头）。
+    """
     import requests as req
 
     result_url = sr["url"]
-    result_title = sr.get("title", "") or result_url
+    serp_title = (sr.get("title") or "").strip()
     result_url_hash = hashlib.md5(result_url.encode("utf-8")).hexdigest()
     result_domain = _extract_domain(result_url)
 
@@ -474,40 +636,106 @@ def _fetch_and_store_result(prisma, sr, source, query_str, region, raw_pages, tr
     if existing:
         return
 
-    page_title = result_title
-    try:
-        page_resp = req.get(result_url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
-        if page_resp.status_code == 200:
-            page_html = _decode_response(page_resp)
-            if "<title>" in page_html.lower():
-                ts = page_html.lower().find("<title>") + 7
-                te = page_html.lower().find("</title>", ts)
-                if te > ts:
-                    page_title = page_html[ts:te].strip()[:500] or page_title
+    page_html = None
+    status_code = None
+    fetch_err: str | None = None
+    for attempt in range(2):
+        try:
+            page_resp = req.get(
+                result_url,
+                timeout=15,
+                headers=_build_request_headers(result_url),
+                allow_redirects=True,
+            )
+            status_code = page_resp.status_code
+            if page_resp.status_code == 200:
+                page_html = _decode_response(page_resp)
+                break
+            else:
+                fetch_err = f"HTTP {page_resp.status_code}"
+        except Exception as ex:
+            fetch_err = str(ex)
+        time.sleep(0.5)
 
-            if raw_pages is not None:
-                _save_raw_page(raw_pages, result_url, page_html, "search_result", page_title, search_query=query_str, source_name=source.name)
-
+    if page_html is None:
+        logger.warning(
+            "fetch detail failed [%s] url=%s err=%s",
+            source.name, result_url[:120], fetch_err,
+        )
+    elif _looks_like_antibot_page(page_html):
+        logger.warning(
+            "anti-bot / error page detected [%s] url=%s size=%d",
+            source.name, result_url[:120], len(page_html),
+        )
+        # 标记一下 visited，避免下次还重复抓
+        try:
             prisma.visitedurl.upsert(
                 where={"urlHash": result_url_hash},
                 data={
-                    "create": {"url": result_url, "urlHash": result_url_hash, "searchQuery": query_str, "status": page_resp.status_code},
-                    "update": {"status": page_resp.status_code, "searchQuery": query_str},
+                    "create": {
+                        "url": result_url, "urlHash": result_url_hash,
+                        "searchQuery": query_str,
+                        "status": status_code or 599,
+                    },
+                    "update": {
+                        "status": status_code or 599, "searchQuery": query_str,
+                    },
                 },
             )
+        except Exception:
+            pass
+        return
 
-        sub_delay = 1.0 / source.rateLimit if source.rateLimit > 0 else 1.0
-        time.sleep(sub_delay)
-    except Exception as ex:
-        logger.debug("Failed to fetch result page %s: %s", result_url, ex)
+    # 选标题：优先页面正文里的 ArticleTitle/og:title/<title>/h1，再退回 serp_title
+    page_title = ""
+    if page_html:
+        page_title = _extract_title_from_html(page_html, fallback="")
+
+    if not page_title or _is_generic_title(page_title):
+        page_title = serp_title or page_title
+
+    if not page_title:
+        # 实在没标题，用 URL 兜底但记录 warning，避免静默存空标题
+        logger.warning(
+            "no title extractable [%s] url=%s (serp_title='%s')",
+            source.name, result_url[:120], serp_title[:80],
+        )
+        page_title = result_url
+
+    page_title = page_title[:500]
+
+    if page_html and raw_pages is not None:
+        try:
+            _save_raw_page(
+                raw_pages, result_url, page_html, "search_result",
+                page_title, search_query=query_str, source_name=source.name,
+            )
+        except Exception as ex:
+            logger.debug("save raw_page failed for %s: %s", result_url[:80], ex)
+
+    if status_code:
+        try:
+            prisma.visitedurl.upsert(
+                where={"urlHash": result_url_hash},
+                data={
+                    "create": {
+                        "url": result_url, "urlHash": result_url_hash,
+                        "searchQuery": query_str, "status": status_code,
+                    },
+                    "update": {
+                        "status": status_code, "searchQuery": query_str,
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+    sub_delay = 1.0 / source.rateLimit if source.rateLimit > 0 else 1.0
+    time.sleep(sub_delay)
 
     try:
         prisma.searchresult.create(data={
-            "title": page_title[:500],
+            "title": page_title,
             "url": result_url,
             "urlHash": result_url_hash,
             "domain": result_domain,
@@ -548,9 +776,11 @@ def _crawl_website(prisma, source, raw_pages, tracker, extra_domains=None):
 
         try:
             import requests as req
-            resp = req.get(url, timeout=15, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            })
+            resp = req.get(
+                url, timeout=15,
+                headers=_build_request_headers(url),
+                allow_redirects=True,
+            )
 
             prisma.visitedurl.create(data={
                 "url": url, "urlHash": url_hash, "status": resp.status_code,
@@ -560,12 +790,17 @@ def _crawl_website(prisma, source, raw_pages, tracker, extra_domains=None):
                 html = _decode_response(resp)
                 domain = _extract_domain(url)
 
-                title = ""
-                if "<title>" in html.lower():
-                    start = html.lower().find("<title>") + 7
-                    end = html.lower().find("</title>", start)
-                    if end > start:
-                        title = html[start:end].strip()[:500]
+                if _looks_like_antibot_page(html):
+                    logger.warning(
+                        "anti-bot / error page detected [%s] url=%s size=%d",
+                        source.name, url[:120], len(html or ""),
+                    )
+                    delay = 1.0 / source.rateLimit if source.rateLimit > 0 else 1.0
+                    time.sleep(delay)
+                    tracker.update(pages=1)
+                    continue
+
+                title = _extract_title_from_html(html, fallback="")
 
                 if raw_pages is not None:
                     _save_raw_page(raw_pages, url, html, "website", title, source_name=source.name)
@@ -573,7 +808,7 @@ def _crawl_website(prisma, source, raw_pages, tracker, extra_domains=None):
                 result_exists = prisma.searchresult.find_unique(where={"urlHash": url_hash})
                 if not result_exists:
                     prisma.searchresult.create(data={
-                        "title": title or url,
+                        "title": (title or url)[:500],
                         "url": url,
                         "urlHash": url_hash,
                         "domain": domain,

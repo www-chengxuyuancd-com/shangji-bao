@@ -390,19 +390,79 @@ class ContactExtractor(FieldExtractor):
 
 # ====================== 标题提取 ======================
 
+_TITLE_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_TITLE_GENERIC_SUFFIX_RE = re.compile(
+    r"\s*[-_|｜·»]\s*(?:中国政府采购网|政府采购网|政采网|招标公告网|中国招标网|百度搜索|百度).*$",
+)
+
+
+def _clean_extracted_title(s: str) -> str:
+    if not s:
+        return ""
+    s = _TITLE_HTML_TAG_RE.sub(" ", s)
+    s = s.replace("\xa0", " ").replace("\u3000", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = _TITLE_GENERIC_SUFFIX_RE.sub("", s)
+    return s.strip()[:500]
+
+
+def _looks_generic_title(t: str) -> bool:
+    if not t or len(t) < 4:
+        return True
+    low = t.lower().strip()
+    for kw in (
+        "中国政府采购网", "政府采购信息网", "招标采购导航",
+        "百度搜索", "bing", "google", "首页", "网站首页",
+    ):
+        if low == kw.lower() or low.endswith(kw.lower()):
+            return True
+    return False
+
+
 class TitleExtractor(FieldExtractor):
     name = "rule_title"
 
     def extract(self, text: str, html: str, context: dict) -> str | None:
-        title = context.get("title", "")
-        if title and len(title.strip()) > 2:
-            return title.strip()[:500]
+        # context 里的 title 是抓取阶段存的，如果不太通用就直接用
+        ctx_title = (context.get("title") or "").strip()
+        if ctx_title and len(ctx_title) >= 4 and not _looks_generic_title(ctx_title):
+            return _clean_extracted_title(ctx_title) or ctx_title[:500]
 
-        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-        if m:
-            t = m.group(1).strip()
-            if t:
-                return t[:500]
+        if html:
+            # 多套规则按优先级匹配：ArticleTitle > og:title > <title> > <h1>
+            m = re.search(
+                r'<meta\s+name\s*=\s*["\']ArticleTitle["\']\s+content\s*=\s*["\']([^"\']+)["\']',
+                html, re.IGNORECASE,
+            )
+            if m:
+                t = _clean_extracted_title(m.group(1))
+                if t and len(t) >= 4:
+                    return t
+
+            m = re.search(
+                r'<meta\s+property\s*=\s*["\']og:title["\']\s+content\s*=\s*["\']([^"\']+)["\']',
+                html, re.IGNORECASE,
+            )
+            if m:
+                t = _clean_extracted_title(m.group(1))
+                if t and len(t) >= 4:
+                    return t
+
+            m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+            if m:
+                t = _clean_extracted_title(m.group(1))
+                if t and len(t) >= 4 and not _looks_generic_title(t):
+                    return t
+
+            m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL)
+            if m:
+                t = _clean_extracted_title(m.group(1))
+                if t and len(t) >= 4:
+                    return t
+
+        # 实在拿不到，用上下文 title（即使通用）也好过空
+        if ctx_title:
+            return ctx_title[:500]
 
         first_line = text[:200].strip().split("\n")[0].strip()
         return first_line[:500] if first_line else None

@@ -65,6 +65,13 @@
                     title="{{ '至少需要 20 条有公告类型的解析数据' if notice_type_count < 20 else '训练公告类型多分类模型' }}">
                 📋 公告类型{{ ' (' + notice_type_count|string + '/20)' if notice_type_count < 20 else '' }}
             </button>
+            <button type="button" id="btn-ambiguous" class="btn btn-sm"
+                    style="background:#fa8c16; color:#fff; border-color:#fa8c16;"
+                    {{ 'disabled' if not bert_model_exists else '' }}
+                    onclick="loadAmbiguous()"
+                    title="{{ '需要先训练 BERT 模型' if not bert_model_exists else '按 BERT 预测分数排序，优先标注最摇摆的未标注样本（分数接近 0.5），主动学习效率比随机标注高 3~5 倍' }}">
+                🎯 摇摆样本
+            </button>
         </div>
     </div>
 </div>
@@ -442,6 +449,153 @@ function batchDelete() {
         }
     })
     .catch(function(){showToast('请求失败','error');});
+}
+
+var _ambiguousRunning = false;
+
+function _getOrCreateAmbBar() {
+    var bar = document.getElementById('amb-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'amb-bar';
+        bar.style.cssText = 'margin-bottom:10px; padding:10px 14px; background:#fff7e6; border:1px solid #ffd591; border-radius:4px; font-size:13px;';
+        var batchBar = document.getElementById('batch-bar');
+        batchBar.parentNode.insertBefore(bar, batchBar);
+    }
+    bar.style.display = '';
+    return bar;
+}
+
+function loadAmbiguous() {
+    if (_ambiguousRunning) { showToast('正在加载，请稍等', 'info'); return; }
+
+    var scanInput = prompt(
+        '🎯 摇摆样本（主动学习）\n\n'
+        + '从最近的【未标注】样本中扫描 N 条，用 BERT 打分，挑出最接近 0.5 的样本优先标注。\n\n'
+        + '请输入扫描候选池大小（建议 500~2000）：',
+        '500'
+    );
+    if (scanInput === null) return;
+    var scanSize = parseInt(scanInput, 10);
+    if (!scanSize || scanSize < 20) { showToast('扫描数至少 20', 'error'); return; }
+
+    var takeInput = prompt('返回前 N 条最摇摆的样本（建议 30~100）：', '50');
+    if (takeInput === null) return;
+    var take = parseInt(takeInput, 10);
+    if (!take || take < 5) { showToast('返回数至少 5', 'error'); return; }
+
+    _ambiguousRunning = true;
+    var bar = _getOrCreateAmbBar();
+    bar.innerHTML = '<span style="color:#fa8c16;">🎯 正在用 BERT 给 ' + scanSize + ' 条未标注样本打分，请稍候...</span>';
+
+    var qs = new URLSearchParams({
+        scan_size: scanSize,
+        take: take,
+        low: '0.3',
+        high: '0.7',
+    });
+    // 沿用当前页面的搜索词/标题/URL 过滤
+    var url = new URL(window.location.href);
+    ['sq', 'title', 'url'].forEach(function(k) {
+        var v = url.searchParams.get(k);
+        if (v) qs.set(k, v);
+    });
+
+    fetch('{{ url_for("admin.labeling_ambiguous") }}?' + qs.toString(), {
+        headers: {'X-Requested-With':'XMLHttpRequest'}
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        _ambiguousRunning = false;
+        if (!d.ok) {
+            bar.innerHTML = '<span style="color:#ff4d4f;">❌ ' + (d.error || '加载失败') + '</span>';
+            showToast(d.error || '加载失败', 'error');
+            return;
+        }
+        renderAmbiguous(d);
+    })
+    .catch(function(e) {
+        _ambiguousRunning = false;
+        bar.innerHTML = '<span style="color:#ff4d4f;">❌ 请求失败</span>';
+        showToast('请求失败', 'error');
+    });
+}
+
+function renderAmbiguous(d) {
+    var bar = _getOrCreateAmbBar();
+    bar.innerHTML = '<span style="color:#fa8c16;">🎯 已加载 <strong>' + d.items.length
+        + '</strong> 条最摇摆样本（扫描 ' + d.scanned + ' 条，在 ' + d.low + '~' + d.high
+        + ' 区间 ' + d.in_range + ' 条）。优先标注这些 →</span>'
+        + ' <button onclick="exitAmbiguous()" style="margin-left:12px; font-size:11px; padding:2px 10px; cursor:pointer; border:1px solid #fa8c16; border-radius:3px; background:#fff; color:#fa8c16;">退出，恢复默认列表</button>';
+
+    if (!d.items.length) {
+        showToast('没有命中摇摆区间的样本，可以放宽扫描数', 'info');
+        return;
+    }
+
+    var tbody = document.querySelector('.admin-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    d.items.forEach(function(s) {
+        var scorePct = (s.bert_score * 100).toFixed(1);
+        var dist = Math.abs(s.bert_score - 0.5);
+        var color = '#fa8c16';
+        if (dist < 0.05) color = '#f5222d';
+        else if (dist < 0.10) color = '#fa541c';
+
+        var contentEsc = (s.content_preview || '无内容').replace(/[&<>]/g, function(c){
+            return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];
+        });
+        var titleEsc = (s.title || '-').replace(/[&<>]/g, function(c){
+            return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];
+        });
+        var sqEsc = (s.search_query || '-').replace(/[&<>]/g, function(c){
+            return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];
+        });
+        var srcEsc = (s.source_name || '-').replace(/[&<>]/g, function(c){
+            return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];
+        });
+
+        var row = document.createElement('tr');
+        row.id = 'row-' + s.id;
+        row.dataset.id = s.id;
+        row.innerHTML =
+            '<td><input type="checkbox" class="row-check" value="' + s.id + '" onclick="updateBatch()"></td>'
+            + '<td>' + s.id + '</td>'
+            + '<td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; color:#1890ff;"'
+            + ' onclick="toggleDetail(' + s.id + ')">'
+            + '<span style="display:inline-block; min-width:54px; padding:1px 6px; margin-right:6px; background:' + color + '; color:#fff; border-radius:3px; font-size:11px; text-align:center;" title="BERT 预测相关概率，越接近 50% 越摇摆">' + scorePct + '%</span>'
+            + titleEsc + '</td>'
+            + '<td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="' + sqEsc + '">' + sqEsc + '</td>'
+            + '<td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="' + srcEsc + '">' + srcEsc + '</td>'
+            + '<td id="label-' + s.id + '"><span style="color:#ccc; font-size:12px;">未标注</span></td>'
+            + '<td style="white-space:nowrap;">'
+            + '<button type="button" class="btn btn-sm btn-ghost" id="btn-rel-' + s.id + '" onclick="setLabel(' + s.id + ', 1)" style="font-size:11px; padding:2px 8px;">✔ 相关</button> '
+            + '<button type="button" class="btn btn-sm btn-ghost" id="btn-irr-' + s.id + '" onclick="setLabel(' + s.id + ', 0)" style="font-size:11px; padding:2px 8px;">✘ 不相关</button> '
+            + '<button type="button" class="btn btn-sm btn-ghost" style="font-size:11px; padding:2px 6px; color:#ff4d4f;" onclick="ajaxDelete(\'/admin/labeling/' + s.id + '/delete\', this)">删除</button>'
+            + '</td>';
+        tbody.appendChild(row);
+
+        var detail = document.createElement('tr');
+        detail.id = 'detail-' + s.id;
+        detail.style.display = 'none';
+        detail.innerHTML =
+            '<td colspan="7" style="padding:12px 16px; background:#fafafa; font-size:13px; line-height:1.6;">'
+            + '<div style="margin-bottom:8px;"><a href="' + s.url + '" target="_blank" rel="noopener" style="color:#1890ff; word-break:break-all;">' + s.url + '</a></div>'
+            + '<div style="color:#333; white-space:pre-wrap; max-height:200px; overflow-y:auto;">' + contentEsc + '</div>'
+            + '</td>';
+        tbody.appendChild(detail);
+    });
+
+    var pageInfo = document.querySelector('.pagination');
+    if (pageInfo) pageInfo.style.display = 'none';
+
+    showToast('已切换到摇摆样本视图，共 ' + d.items.length + ' 条', 'success');
+}
+
+function exitAmbiguous() {
+    window.location.reload();
 }
 
 function _getOrCreateTrainBar() {
