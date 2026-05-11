@@ -534,7 +534,15 @@ function _pollTrainingStatus(type) {
             } else {
                 var btn = document.getElementById(btnId);
                 if (s.result && s.result.success) {
-                    var msg = icon + ' 训练完成！样本 ' + s.result.samples + ' 条，准确率 ' + s.result.val_accuracy;
+                    var r = s.result;
+                    var extra = '';
+                    if (r.val_f1 !== undefined) {
+                        extra = ' | P=' + r.val_precision + ' R=' + r.val_recall + ' F1=' + r.val_f1;
+                        if (r.imbalance_ratio) {
+                            extra += ' (不平衡 ' + r.imbalance_ratio + ':1, 策略=' + r.balance_strategy + ')';
+                        }
+                    }
+                    var msg = icon + ' 训练完成！样本 ' + r.samples + ' 条，acc=' + r.val_accuracy + extra;
                     bar.innerHTML = '<span style="color:#52c41a;">✔ ' + msg + '</span>';
                     showToast(msg, 'success');
                     btn.textContent = icon + (type === 'bert' ? ' BERT' : ' 公告类型');
