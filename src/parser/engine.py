@@ -451,7 +451,15 @@ def start_parse_job(mode: str = "unparsed_and_errors") -> int:
 
 
 def _run_relevance_rejudge(job_id: int):
-    """在子进程中用最新 FastText 模型重新判定所有已解析结果的相关性。"""
+    """在子进程中用最新分类模型批量重新判定所有已解析结果的相关性。
+
+    优化点：
+      1. BERT 走批量推理（predict_batch），相比逐条推理可加速 5~50x。
+      2. 列表/搜索结果页的"零成本"判定先做、单独立即写库。
+      3. 模型推理与 DB 写入按 BATCH_SIZE 分批；DB 写按 5 条刷一次进度，
+         让前端进度条手感更顺。
+      4. 批大小通过环境变量 REJUDGE_BATCH_SIZE 调（默认 64，128G 机器可调到 128~256）。
+    """
     prisma = Prisma()
     prisma.connect()
 
@@ -460,19 +468,23 @@ def _run_relevance_rejudge(job_id: int):
     db = mongo_client.get_default_database()
     raw_pages = db["raw_pages"]
 
+    BATCH_SIZE = int(os.getenv("REJUDGE_BATCH_SIZE", "64"))
+    PROGRESS_FLUSH_EVERY = int(os.getenv("REJUDGE_PROGRESS_EVERY", "5"))
+
     try:
         prisma.crawljob.update(
             where={"id": job_id},
             data={"status": "running", "startedAt": datetime.now(timezone.utc)},
         )
 
-        bert_available = False
+        bert_predictor = None
         try:
             from src.classifier.bert_predictor import BertRelevancePredictor
             BertRelevancePredictor.reload()
-            bert_available = BertRelevancePredictor.get_instance().available
+            bert_predictor = BertRelevancePredictor.get_instance()
         except Exception:
             pass
+        bert_available = bool(bert_predictor and bert_predictor.available)
 
         fasttext_available = False
         try:
@@ -494,9 +506,13 @@ def _run_relevance_rejudge(job_id: int):
             return
 
         model_name = "BERT" if bert_available else "FastText"
-        logger.info("Relevance rejudge using %s model", model_name)
+        logger.info(
+            "Relevance rejudge using %s model, batch_size=%d",
+            model_name, BATCH_SIZE,
+        )
 
         user_keywords = [kw.keyword for kw in prisma.searchkeyword.find_many(where={"enabled": True})]
+        threshold = 0.5
 
         all_results = prisma.parsedresult.find_many()
         total = len(all_results)
@@ -505,15 +521,149 @@ def _run_relevance_rejudge(job_id: int):
         done = 0
         updated = 0
         error_count = 0
-        error_logs = []
+        error_logs: list[str] = []
+        last_flush_done = 0
 
-        relevance_extractor = RelevanceExtractor()
         notice_type_extractor = NoticeTypeExtractor()
+
+        def _flush_progress(force: bool = False):
+            nonlocal last_flush_done
+            if not force and (done - last_flush_done) < PROGRESS_FLUSH_EVERY:
+                return
+            try:
+                prisma.crawljob.update(
+                    where={"id": job_id},
+                    data={
+                        "donePages": done,
+                        "resultCount": updated,
+                        "errorCount": error_count,
+                    },
+                )
+                last_flush_done = done
+            except Exception as e:
+                logger.warning("rejudge progress flush failed: %s", e)
+
+        # ---- 预处理：把"立即可判定/可跳过"的条目先处理掉，剩下的攒批做模型推理 ----
+        pending: list[dict] = []  # 待批量打分的条目：{pr, text, context}
+
+        from bson import ObjectId  # 移到循环外避免反复 import
+
+        def _flush_pending():
+            """对 pending 队列批量打分并写库。"""
+            nonlocal done, updated, error_count
+            if not pending:
+                return
+
+            texts = [item["text"] for item in pending]
+            titles = [item["context"].get("title", "") for item in pending]
+
+            bert_scores: list[float | None] = [None] * len(pending)
+            if bert_available:
+                try:
+                    preds = bert_predictor.predict_batch(
+                        texts, titles, batch_size=BATCH_SIZE,
+                    )
+                    bert_scores = [
+                        (p["score"] if p is not None else None) for p in preds
+                    ]
+                except Exception as e:
+                    logger.warning("rejudge: batch BERT inference failed: %s", e)
+
+            # FastText 单例 predictor（仅 BERT 不可用时使用）
+            ft_predictor = None
+            if not bert_available and fasttext_available:
+                try:
+                    from src.classifier.predictor import RelevancePredictor
+                    ft_predictor = RelevancePredictor.get_instance()
+                except Exception:
+                    ft_predictor = None
+
+            for idx, item in enumerate(pending):
+                pr = item["pr"]
+                text = item["text"]
+                context = item["context"]
+                try:
+                    # 关键词命中率（与 RelevanceExtractor 行为一致）
+                    text_lower = text.lower()
+                    matched = [
+                        kw for kw in user_keywords if kw and kw.lower() in text_lower
+                    ]
+                    kw_score = (
+                        len(matched) / len(user_keywords) if user_keywords else 0
+                    )
+
+                    bert_score = bert_scores[idx]
+                    if bert_score is not None:
+                        is_relevant = bert_score >= threshold
+                        final_score = bert_score
+                    elif ft_predictor is not None:
+                        ml_label = None
+                        ml_confidence = None
+                        try:
+                            pred = ft_predictor.predict(
+                                text, title=context.get("title", "")
+                            )
+                            if pred:
+                                ml_label = pred.get("label")
+                                ml_confidence = pred.get("confidence")
+                        except Exception:
+                            pass
+
+                        if (
+                            ml_label is not None
+                            and ml_confidence is not None
+                            and ml_confidence > 0.7
+                        ):
+                            is_relevant = ml_label == "relevant"
+                            final_score = (
+                                ml_confidence if is_relevant else 1 - ml_confidence
+                            )
+                        elif user_keywords:
+                            is_relevant = kw_score > 0
+                            final_score = kw_score
+                        else:
+                            is_relevant = None
+                            final_score = None
+                    elif user_keywords:
+                        is_relevant = kw_score > 0
+                        final_score = kw_score
+                    else:
+                        is_relevant = None
+                        final_score = None
+
+                    update_data = {
+                        "isRelevant": is_relevant,
+                        "relevanceScore": (
+                            round(final_score, 4) if final_score is not None else None
+                        ),
+                        "matchedKeywords": ",".join(matched),
+                    }
+
+                    if not pr.noticeType:
+                        nt = notice_type_extractor.extract(text, "", context)
+                        if nt:
+                            update_data["noticeType"] = nt
+
+                    prisma.parsedresult.update(
+                        where={"id": pr.id}, data=update_data,
+                    )
+                    updated += 1
+                except Exception as e:
+                    error_count += 1
+                    msg = f"[{(pr.url or '')[:80]}] {e}"
+                    error_logs.append(msg)
+                    logger.warning("Relevance rejudge error: %s", msg)
+
+                done += 1
+                _flush_progress()
+
+            pending.clear()
 
         for pr in all_results:
             try:
                 if pr.noticeType in ("list_page", "search_serp"):
                     done += 1
+                    _flush_progress()
                     continue
 
                 # 优先做"搜索引擎结果页"判定（成本最低，零 IO）
@@ -529,12 +679,12 @@ def _run_relevance_rejudge(job_id: int):
                     )
                     updated += 1
                     done += 1
+                    _flush_progress()
                     continue
 
                 text = None
                 html_for_listing = None
                 if pr.mongoDocId:
-                    from bson import ObjectId
                     mongo_doc = raw_pages.find_one({"_id": ObjectId(pr.mongoDocId)})
                     if mongo_doc and mongo_doc.get("html"):
                         html_for_listing = mongo_doc["html"]
@@ -545,6 +695,7 @@ def _run_relevance_rejudge(job_id: int):
 
                 if not text.strip():
                     done += 1
+                    _flush_progress()
                     continue
 
                 if html_for_listing:
@@ -567,6 +718,7 @@ def _run_relevance_rejudge(job_id: int):
                         )
                         updated += 1
                         done += 1
+                        _flush_progress()
                         continue
 
                 context = {
@@ -575,39 +727,24 @@ def _run_relevance_rejudge(job_id: int):
                     "search_query": pr.searchQuery or "",
                     "source_name": pr.sourceName or "",
                     "user_keywords": user_keywords,
+                    "relevance_threshold": threshold,
                 }
 
-                rel = relevance_extractor.extract(text, "", context)
+                pending.append({"pr": pr, "text": text, "context": context})
 
-                update_data = {
-                    "isRelevant": rel.get("is_relevant"),
-                    "relevanceScore": rel.get("score"),
-                    "matchedKeywords": rel.get("matched"),
-                }
-
-                if not pr.noticeType:
-                    nt = notice_type_extractor.extract(text, "", context)
-                    if nt:
-                        update_data["noticeType"] = nt
-
-                prisma.parsedresult.update(
-                    where={"id": pr.id},
-                    data=update_data,
-                )
-                updated += 1
+                if len(pending) >= BATCH_SIZE:
+                    _flush_pending()
 
             except Exception as e:
                 error_count += 1
-                msg = f"[{pr.url[:80]}] {e}"
+                msg = f"[{(pr.url or '')[:80]}] {e}"
                 error_logs.append(msg)
                 logger.warning("Relevance rejudge error: %s", msg)
+                done += 1
+                _flush_progress()
 
-            done += 1
-            if done % 20 == 0:
-                prisma.crawljob.update(
-                    where={"id": job_id},
-                    data={"donePages": done, "resultCount": updated, "errorCount": error_count},
-                )
+        _flush_pending()
+        _flush_progress(force=True)
 
         prisma.crawljob.update(
             where={"id": job_id},
