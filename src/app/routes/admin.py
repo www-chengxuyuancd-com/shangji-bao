@@ -746,7 +746,6 @@ def parsed_list():
     #   已解析  = ParsedResult.parseErrors=NULL 的条数
     #   解析报错 = ParsedResult.parseErrors IS NOT NULL 的条数
     #   待抓取  = SearchResult 里 ParsedResult 还没记录的（约等于"还没开始解析"）
-    # mongo_total 仍取 estimated 用于内部诊断，不再展示在 UI 上。
     search_total = prisma.searchresult.count()
     parsed_ok_total = prisma.parsedresult.count(where={"parseErrors": None})
     parsed_err_total = prisma.parsedresult.count(where={"parseErrors": {"not": None}})
@@ -764,10 +763,42 @@ def parsed_list():
         raw_pages = None
         mongo_total = 0
 
-    # 待抓取 ≈ SearchResult 数 - ParsedResult 数（按 urlHash 一一对应，差值就是
-    # 还没解析过的 url 数；注意这里有一种边界情况：parsedresult 偶尔多于
-    # searchresult（早期 gov_api 没回写 SearchResult），用 max(0, ...) 兜底。
-    unfetched_total = max(0, search_total - parsed_total)
+    # 待抓取 = SearchResult 中 url_hash 不在 ParsedResult 的条数。
+    # 注意：之前用 search_total - parsed_total 做减法，
+    # 当 ParsedResult > SearchResult（出现孤儿 ParsedResult，比如旧版 gov_api 没回写
+    # SearchResult、或解析时按 mongo url 落库但 SearchResult 没对应记录），
+    # 减出来是负数被 max(0,) 截成 0，UI 永远显示 0，掩盖真实待解析量。
+    # 改用 SQL LEFT JOIN 准确数。
+    try:
+        rows = prisma.query_raw(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM search_results sr
+            LEFT JOIN parsed_results pr ON sr.url_hash = pr.url_hash
+            WHERE pr.id IS NULL
+            """
+        )
+        unfetched_total = int(rows[0]["cnt"]) if rows else 0
+    except Exception as _e:
+        logger.warning("parsed_list 待抓取统计 SQL 失败，回退到减法：%s", _e)
+        unfetched_total = max(0, search_total - parsed_total)
+
+    # 孤儿 ParsedResult：在 ParsedResult 中但没有对应 SearchResult。
+    # 这通常是历史脏数据（早期 gov_api 直入 ParsedResult / 重复解析任务等），
+    # 用于在 UI 上提示用户。
+    try:
+        rows = prisma.query_raw(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM parsed_results pr
+            LEFT JOIN search_results sr ON pr.url_hash = sr.url_hash
+            WHERE sr.id IS NULL
+            """
+        )
+        orphan_parsed_total = int(rows[0]["cnt"]) if rows else 0
+    except Exception:
+        orphan_parsed_total = 0
+
     # 兼容旧模板字段名：unparsed_total 用解析报错数代替
     unparsed_total = parsed_err_total
 
@@ -944,6 +975,7 @@ def parsed_list():
         mongo_total=mongo_total,
         unparsed=unparsed_total,
         unfetched=unfetched_total,
+        orphan_parsed=orphan_parsed_total,
         model_exists=model_exists,
         bert_model_exists=bert_model_exists,
     )
