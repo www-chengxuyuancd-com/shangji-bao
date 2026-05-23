@@ -207,6 +207,22 @@ def _run_parse_job(job_id: int, mode: str = "unparsed_and_errors"):
                 url = doc.get("url", "")
                 url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
 
+                # 跳过搜索引擎自身的结果页（Bing/百度 等的 /search?q=… 页面）。
+                # 这些是 _crawl_one_query 顺手存进 raw_pages 的，不属于业务详情页。
+                # 之前没跳：每次解析都会落一行 parseErrors='search_serp:…' 到 ParsedResult，
+                # 客户机上累积了 18 万条孤儿（SearchResult 里没有它们的 hash）。
+                src_type = (doc.get("meta") or {}).get("source_type") or ""
+                if src_type == "search_engine":
+                    done += 1
+                    skipped_count += 1
+                    if (
+                        done % 500 == 0
+                        or _time.time() - last_progress_db_update_at >= 2.0
+                    ):
+                        _flush_progress()
+                        last_progress_db_update_at = _time.time()
+                    continue
+
                 in_ok = url_hash in existing_ok_hashes
                 in_err = url_hash in existing_err_map
 
