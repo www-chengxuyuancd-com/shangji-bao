@@ -66,7 +66,12 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(api_bp, url_prefix="/api")
 
-    if os.getenv("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
+    # Flask 内置开发服务器在 debug+reloader 下会启动两次进程，
+    # 只有子进程（WERKZEUG_RUN_MAIN=true）才应初始化后台任务；
+    # 但在 gunicorn/docker 中该变量通常不存在，也必须初始化。
+    werkzeug_run_main = os.getenv("WERKZEUG_RUN_MAIN")
+    should_bootstrap_background = (werkzeug_run_main == "true") or (werkzeug_run_main is None)
+    if should_bootstrap_background:
         try:
             from src.scheduler.runner import fix_orphaned_jobs
             fix_orphaned_jobs()

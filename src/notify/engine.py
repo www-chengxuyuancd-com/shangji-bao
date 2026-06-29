@@ -113,6 +113,18 @@ def _find_matched_regions(title: str, content: str, all_region_names: set) -> st
     return ",".join(seen) if seen else ""
 
 
+def _parse_exclude_regions(raw: str | None) -> set[str]:
+    """解析手工排除地区配置（逗号/换行分隔）。"""
+    if not raw:
+        return set()
+    names = set()
+    for part in raw.replace("\n", ",").split(","):
+        name = part.strip()
+        if name:
+            names.add(name)
+    return names
+
+
 def _format_message(item) -> tuple[str, str]:
     title = item.title or "无标题"
     parts = []
@@ -138,7 +150,15 @@ def _format_message(item) -> tuple[str, str]:
     return title, "\n".join(parts)
 
 
-def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=None, disabled_region_names=None) -> str | None:
+def check_item_filter(
+    item,
+    cfg,
+    exclude_types,
+    region_names,
+    blacklist_words=None,
+    disabled_region_names=None,
+    manual_exclude_regions=None,
+) -> str | None:
     """
     检查一条 ParsedResult 是否应被跳过。
     返回跳过原因或 None（符合条件）。
@@ -158,6 +178,12 @@ def check_item_filter(item, cfg, exclude_types, region_names, blacklist_words=No
         for bw in blacklist_words:
             if bw in item.title:
                 return "blacklist"
+
+    if manual_exclude_regions:
+        text_all = " ".join(filter(None, [item.title, item.location, item.summary]))
+        for rn in manual_exclude_regions:
+            if rn and rn in text_all:
+                return f"region:{rn}"
 
     if cfg.filterRegion:
         text_to_check = f"{item.title or ''} {item.location or ''}"
@@ -207,6 +233,7 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
 
         region_names = _get_region_names_for_filter(prisma)
         disabled_region_names = _get_disabled_region_names(prisma)
+        manual_exclude_regions = _parse_exclude_regions(getattr(cfg, "excludeRegions", None))
         all_region_names = _get_all_region_names(prisma)
 
         # 把"日期+相关性"过滤前移到 PG 查询：只看 filterDays 内 + isRelevant=True 的，
@@ -257,7 +284,15 @@ def prepare_notifications(prisma: Prisma | None = None) -> dict:
                     continue
 
                 title, content = _format_message(item)
-                skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
+                skip_reason = check_item_filter(
+                    item,
+                    cfg,
+                    exclude_types,
+                    region_names,
+                    blacklist_words,
+                    disabled_region_names,
+                    manual_exclude_regions,
+                )
                 matched_region = _find_matched_regions(
                     item.title,
                     " ".join(filter(None, [item.location, item.summary])),
@@ -384,6 +419,7 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
 
         region_names = _get_region_names_for_filter(prisma)
         disabled_region_names = _get_disabled_region_names(prisma)
+        manual_exclude_regions = _parse_exclude_regions(getattr(cfg, "excludeRegions", None))
         all_region_names = _get_all_region_names(prisma)
 
         msgs = prisma.notifymessage.find_many(
@@ -407,7 +443,15 @@ def reevaluate_messages(prisma: Prisma | None = None) -> dict:
             if not item:
                 continue
 
-            skip_reason = check_item_filter(item, cfg, exclude_types, region_names, blacklist_words, disabled_region_names)
+            skip_reason = check_item_filter(
+                item,
+                cfg,
+                exclude_types,
+                region_names,
+                blacklist_words,
+                disabled_region_names,
+                manual_exclude_regions,
+            )
             matched_region = _find_matched_regions(
                 item.title,
                 " ".join(filter(None, [item.location, item.summary])),

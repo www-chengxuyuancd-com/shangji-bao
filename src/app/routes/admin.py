@@ -1491,6 +1491,7 @@ def notify_config_save():
     only_relevant = request.form.get("only_relevant") == "on"
     exclude_types = ",".join(request.form.getlist("exclude_types"))
     title_blacklist = request.form.get("title_blacklist", "").strip()
+    exclude_regions = request.form.get("exclude_regions", "").strip()
 
     prisma.notifyconfig.update(
         where={"id": cfg.id},
@@ -1501,6 +1502,7 @@ def notify_config_save():
             "onlyRelevant": only_relevant,
             "excludeTypes": exclude_types or None,
             "titleBlacklist": title_blacklist or None,
+            "excludeRegions": exclude_regions or None,
         },
     )
 

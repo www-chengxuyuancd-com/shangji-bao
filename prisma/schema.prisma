@@ -242,6 +242,7 @@ model NotifyConfig {
   relevanceThreshold Float @default(0.5) @map("relevance_threshold") // BERT 相关性分数阈值 0~1
   excludeTypes    String?  @map("exclude_types") @db.VarChar(500) // 逗号分隔: 中标,验收公告
   titleBlacklist  String?  @map("title_blacklist") @db.VarChar(1000) // 逗号分隔: 招聘,招水电工
+  excludeRegions  String?  @map("exclude_regions") @db.VarChar(1000) // 逗号/换行分隔: 乐山市市中区, 某某区
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 

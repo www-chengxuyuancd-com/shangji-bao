@@ -900,6 +900,15 @@ def _auto_pipeline_after_crawl(prisma, schedule_id=None):
 
 def _run_parse_in_process(parse_job_id: int, auto_notify: bool):
     """在新进程中执行解析，完成后根据配置自动发送通知。"""
+    # 注意：爬虫任务自身运行在 multiprocessing 子进程内。
+    # 如果当前进程是 daemon，则 Python 不允许再创建子进程，
+    # 否则会抛出 "daemonic processes are not allowed to have children"。
+    # 这会导致 auto_parse 任务一直停留在 pending。
+    if multiprocessing.current_process().daemon:
+        logger.info("Current process is daemon, run auto-parse inline (job_id=%s)", parse_job_id)
+        _auto_parse_and_notify(parse_job_id, auto_notify)
+        return
+
     process = multiprocessing.Process(
         target=_auto_parse_and_notify,
         args=(parse_job_id, auto_notify),
